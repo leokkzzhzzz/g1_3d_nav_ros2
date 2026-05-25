@@ -1,0 +1,31 @@
+    queue_maxsize_ = 5;
+
+    pub_baselink2map_ = this->create_publisher<nav_msgs::msg::Odometry>("/baselink2map", 100000);
+    pub_baselink2map_kalman_ = this->create_publisher<nav_msgs::msg::Odometry>("/baselink2map_kalman", 100000);
+    pub_motionlink2map_ = this->create_publisher<nav_msgs::msg::Odometry>("/motionlink2map", 100000);
+    pub_odom2map_ = this->create_publisher<nav_msgs::msg::Odometry>("/odom2map", 100000);
+    pub_odom2map_kalman_ = this->create_publisher<nav_msgs::msg::Odometry>("/odom2map_kalman", 100000);
+
+    pub_map_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/map", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+    pub_submap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/submap", 1);
+    pub_scan2map_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/scan2map", 1);
+    pub_scan_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/scan", 1);
+    pub_localization_3d_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/localization_3d", 1);
+    pub_localization_3d_confidence_ = this->create_publisher<std_msgs::msg::Float32>("/localization_3d_confidence", 1);
+    pub_localization_3d_delay_ms_ = this->create_publisher<std_msgs::msg::Float32>("/localization_3d_delay_ms", 1);
+
+    loc_frequence_ = 2.0; //
+    loc_fitness_ = 0.0;
+    // 注册回调函数
+    sub_baselink2odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        "/Odometry_loc", 50, std::bind(&GloabalLocalization::CallbackBaselink2Odom, this, std::placeholders::_1));
+    sub_scan_cur_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+        "/cloud_registered_1", 50, std::bind(&GloabalLocalization::CallbackScan, this, std::placeholders::_1));
+    sub_initialpose_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        "/initialpose", 50, std::bind(&GloabalLocalization::CallbackInitialPose, this, std::placeholders::_1));
+
+    pose_baselink2odom_ = nav_msgs::msg::Odometry();
+    pose_baselink2odom_.header.frame_id = "odom";
+    pose_baselink2odom_.child_frame_id = "base_link";
+    // geometry_msgs的Quaternion会被初始化为0,0,0,0,而不是正确的0,0,0,1
+    pose_baselink2odom_.pose.pose.orientation.w = 1;
