@@ -187,14 +187,14 @@ maintainers.
 ## D-010: Software-only PoC for Nav2 — `g1_write_node` deliberately disabled
 
 **Status:** accepted (2026-05-25)
-**Context:** The full chain produces `/cmd_vel` from twist_mux; in production
+**Context:** The full chain produces `/cmd_vel_out` from twist_mux (NOT /cmd_vel — see test report 2026-05-25); in production
 `g1_write_node` consumes it and calls `LocoClient::SetVelocity` on the
 Unitree SDK. That node currently crashes during `ChannelFactory::Init(0)`
 with `free(): invalid pointer` — see `Known Issues` in README.
 
 **Decision:** For the merged-container Nav2 PoC, `nav2_launch.sh` does NOT
-start `g1_write_node`. The verification chain ends at `/cmd_vel` being
-populated; the operator confirms with `ros2 topic echo /cmd_vel` and RViz2
+start `g1_write_node`. The verification chain ends at `/cmd_vel_out` being
+populated; the operator confirms with `ros2 topic echo /cmd_vel_out` and RViz2
 path rendering, not by walking. G1 stays still.
 
 **Consequences:** The SDK init crash isn't on the critical path for this
