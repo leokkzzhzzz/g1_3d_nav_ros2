@@ -1,0 +1,11 @@
+# botbrain workspace contents — only src is tracked
+# (build/install/log are colcon products, per-machine, never enter git)
+build/
+install/
+log/
+
+# zip / tarball backups should never enter git either
+*.zip
+*.tar
+*.tgz
+*.tar.gz

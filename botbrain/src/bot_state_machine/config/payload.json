@@ -1,0 +1,28 @@
+{
+  "nodes": [
+    {
+      "name": "arm_controller",
+      "display_name": "Arm Controller",
+      "classe": "payload",
+      "order": 1,
+      "description": "Real-time IK arm controller (writes rt/arm_sdk via unitree_sdk2py)",
+      "dependencies": []
+    },
+    {
+      "name": "dx3_hand_controller",
+      "display_name": "DX3 Hand Controller",
+      "classe": "payload",
+      "order": 2,
+      "description": "DX3 dexterous hand controller (writes rt/dex3/{left,right}/cmd)",
+      "dependencies": []
+    },
+    {
+      "name": "multi_ee_goal_markers",
+      "display_name": "Interactive EE Markers",
+      "classe": "payload",
+      "order": 3,
+      "description": "RViz 6-DOF interactive markers for arm goal poses",
+      "dependencies": []
+    }
+  ]
+}

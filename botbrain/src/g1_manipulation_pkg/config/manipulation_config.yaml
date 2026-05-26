@@ -1,0 +1,51 @@
+# =====================================================================
+# g1_manipulation_pkg — manipulation_config.yaml
+# BotBrain-style configuration for arm + hand controllers.
+# =====================================================================
+
+/**:
+  ros__parameters:
+    # --- General ---
+    use_robot: true                    # false = publish joint_states only (simulation)
+    rate_hz: 250.0                     # arm controller loop rate (Hz)
+    arm_velocity_limit: 5.0            # rad/s velocity limit per joint
+
+    # --- IK Solver ---
+    ik_world_frame: "pelvis"
+    ik_alpha: 0.2                      # smoothing factor for q_target
+    ik_goal_filter_alpha: 0.25         # low-pass on incoming goal poses
+    ik_orientation_mode: "full"        # "full" | "position_only"
+    ik_max_ori_step_rad: 0.35
+
+    # --- End-effector calibration ---
+    ee_auto_calibrate: true
+    ee_offset_right_xyz:      [0.0, 0.0, 0.0]
+    ee_offset_right_rpy_deg:  [0.0, 0.0, 0.0]
+    ee_offset_left_xyz:       [0.0, 0.0, 0.0]
+    ee_offset_left_rpy_deg:   [0.0, 0.0, 0.0]
+
+    # --- Goal tracking ---
+    auto_reissue_goals: true
+    goal_pos_tol: 0.01                 # metres
+    goal_ori_tol_deg: 3.0              # degrees
+
+    # --- Mode-B (stop navigation while arm active) ---
+    stop_nav_topic: "manipulation_vel"
+
+    # --- Arm release behaviour on disable ---
+    # true  = 交还控制权，运控接管手臂回到默认站姿（默认）
+    # false = 保持当前位置，arm_sdk 继续维持力矩
+    # 可运行时动态修改: ros2 param set /g1_robot/arm_controller release_on_disable false
+    release_on_disable: true
+
+    # --- DX3 Hand ---
+    arm_controlled: "both"             # "both" | "left" | "right"
+
+    # --- Interactive Markers ---
+    marker_fixed_frame: "pelvis"
+    marker_spawn_rate_hz: 5.0
+    marker_right_tf_frame: "right_hand_point_contact"
+    marker_right_scale: 0.05
+    marker_left_tf_frame: "left_hand_point_contact"
+    marker_left_scale: 0.05
+    marker_publish_enabled_default: false

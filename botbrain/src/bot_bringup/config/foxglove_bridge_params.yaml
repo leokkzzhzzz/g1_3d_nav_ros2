@@ -1,0 +1,58 @@
+/**:
+  ros__parameters:
+    # 端口配置
+    port: 8765
+    address: "0.0.0.0"
+    
+    # 性能配置
+    num_threads: 0  # 0 = 自动检测 CPU 核心数
+    send_buffer_limit: 10000000  # 10 MB
+    max_qos_depth: 100  # 增加 QoS 深度以支持更多 TF 历史
+    
+    # 话题白名单 - 只订阅 g1_robot 命名空间的话题
+    topic_whitelist:
+      - "/g1_robot/.*"
+      - "/tf"
+      - "/tf_static"
+      - "/map"
+      - "/map_metadata"
+      - "/rosout"
+      - "/parameter_events"
+    
+    # 服务白名单 - 避免订阅 Unitree SDK 的特殊服务
+    service_whitelist:
+      - "/g1_robot/.*"
+      - "/rtabmap/.*"
+    
+    # 参数白名单 - 只订阅已启动服务的参数
+    param_whitelist:
+      - "/parameter_events"
+      - "/g1_robot/.*"
+   #   - "/g1_robot/robot_.*"
+   #   - "/g1_robot/controller_.*"
+   #   - "/g1_robot/livox_.*"
+   #   - "/g1_robot/pointcloud_.*"
+   #   - "/g1_robot/rtabmap.*"
+   #   - "/g1_robot/map_odom.*"
+   #   - "/g1_robot/rtab_manager.*"
+      - "/parameter_events"
+    
+    # 忽略未启动的节点（避免超时错误）
+   # param_blacklist:
+   #   - "/g1_robot/local_costmap/.*"
+   #   - "/g1_robot/global_costmap/.*"
+   #   - "/g1_robot/controller_server.*"
+   #   - "/g1_robot/planner_server.*"
+   #   - "/g1_robot/behavior_server.*"
+   #   - "/g1_robot/bt_navigator.*"
+   #   - "/g1_robot/waypoint_follower.*"
+   #   - "/g1_robot/velocity_smoother.*"
+    
+    # 使用压缩
+    use_compression: true
+    
+    # 资产 URI 白名单（用于加载 URDF 模型）
+    asset_uri_allowlist:
+      - "^package://.*"
+      - "^file://.*"
+
