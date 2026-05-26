@@ -24,11 +24,23 @@ TF measurement.
 """
 import argparse
 import math
+import os
 import sys
 import time
 from dataclasses import dataclass
 from threading import Thread
 from typing import List, Optional
+
+# IMPORTANT: set RMW env before any rclpy / DDS C-extension import. The
+# 3d_nav_ros2 stack speaks rmw_zenoh_cpp; without this our Python process
+# falls back to the container default (rmw_fastrtps_cpp) and silently sees
+# zero topics from the running stack. setdefault leaves room for the
+# operator to override from the shell.
+os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_zenoh_cpp")
+os.environ.setdefault(
+    "ZENOH_CONFIG_OVERRIDE",
+    'mode="client";connect/endpoints=["tcp/127.0.0.1:7448"]',
+)
 
 import rclpy
 from rclpy.action import ActionClient
