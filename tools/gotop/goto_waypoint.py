@@ -15,11 +15,11 @@ Usage:
     docker exec -it 3d_nav_ros2 bash -lc "
       source /opt/ros/humble/setup.bash
       source /botbrain_ws/install/setup.bash
-      python3 /tmp/goto_waypoint.py /tmp/waypoints.yaml
+      python3 /g1_3d_nav_ros2/tools/gotop/goto_waypoint.py /tmp/waypoints.yaml
     "
 
 While G1 is moving, the script blocks on the action result. To preempt,
-run /tmp/soft_stop.sh in a separate window — it cancels the current goal
+run /g1_3d_nav_ros2/tools/soft_stop.sh in a separate window — it cancels the current goal
 and G1 stops in place still standing in sport mode.
 
 Built-in commands at the prompt:

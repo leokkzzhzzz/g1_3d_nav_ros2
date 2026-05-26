@@ -29,7 +29,7 @@ Usage:
     docker exec -it 3d_nav_ros2 bash -lc "
       source /opt/ros/humble/setup.bash
       source /botbrain_ws/install/setup.bash
-      python3 /tmp/capture_waypoints.py /tmp/waypoints.yaml
+      python3 /g1_3d_nav_ros2/tools/gotop/capture_waypoints.py /tmp/waypoints.yaml
     "
 
 Requires the localization stack (launch.sh) running so map->body TF is

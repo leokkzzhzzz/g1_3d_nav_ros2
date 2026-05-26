@@ -14,7 +14,7 @@ fast_lio + ground_cloud_accumulator mapping pipeline.
 
 Usage (inside 3d_nav_ros2 container, requires launch.sh up so /tf and
 /cloud_registered_body_1 flow):
-    python3 /tmp/grid_accumulator.py \\
+    python3 /g1_3d_nav_ros2/tools/mapping/grid_accumulator.py \\
         --resolution 0.05 --ground-z 0.15 --obstacle-z 0.25 \\
         --rate 2.0
 

@@ -33,7 +33,7 @@
 # >= 0.7 with: tail -30 /tmp/loc.log | grep fitness | tail -5
 #
 # Usage:
-#   docker exec -it 3d_nav_ros2 /tmp/mapping_save.sh
+#   docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_save.sh
 
 set -e
 

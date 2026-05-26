@@ -158,25 +158,19 @@ sufficient.
 | `tools/soft_stop.sh` | Cancels all `/navigate_to_pose` goals → twist_mux fallback to `cmd_vel_zero` (priority 1) → G1 stops **standing in sport mode** | Routine "stop the test". G1 immediately ready to accept a new goal. |
 | `tools/estop.sh` | Calls `/emergency_stop` service → `emergency_flag_` set, SDK `stop_move()`, then `BALANCE_SQUAT_SQUAT_STAND` → G1 **stops + squats**. Toggle: second call clears `emergency_flag_` and G1 stands back up. | Real emergency. Fail-passive: even if balance fails mid-stop, G1 lands in a low stable posture. |
 
-Both wrappers are designed to be `docker cp`'d into the container under
-`/tmp/`, so the operator-side invocation is single-line:
+Both wrappers live in the canon repo at `tools/soft_stop.sh` and
+`tools/estop.sh`. The repo is bind-mounted into the container at
+`/g1_3d_nav_ros2/`, so the operator-side invocation is single-line:
 
 ```bash
-docker exec -it 3d_nav_ros2 /tmp/soft_stop.sh   # routine
-docker exec -it 3d_nav_ros2 /tmp/estop.sh       # emergency (squats)
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/soft_stop.sh   # routine
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/estop.sh       # emergency (squats)
 ```
 
 The wrappers self-source ROS env and `RMW_IMPLEMENTATION=rmw_zenoh_cpp`
-so they work regardless of the caller shell.
-
-Quick sync into a freshly-started container (Leo side):
-
-```bash
-gh api repos/leokkzzhzzz/g1_3d_nav_ros2/contents/tools/soft_stop.sh --jq .content | base64 -d > /tmp/soft_stop.sh
-gh api repos/leokkzzhzzz/g1_3d_nav_ros2/contents/tools/estop.sh     --jq .content | base64 -d > /tmp/estop.sh
-scp /tmp/soft_stop.sh /tmp/estop.sh unitree@192.168.100.30:/tmp/
-ssh unitree@192.168.100.30 'docker cp /tmp/soft_stop.sh 3d_nav_ros2:/tmp/ && docker cp /tmp/estop.sh 3d_nav_ros2:/tmp/ && docker exec 3d_nav_ros2 chmod +x /tmp/soft_stop.sh /tmp/estop.sh'
-```
+so they work regardless of the caller shell. Because the repo is
+bind-mounted, `git pull` on the G1 host immediately makes any
+updated tool available inside the container — no `docker cp`.
 
 ### Troubleshooting — `base_footprint frame does not exist` after restart
 
@@ -222,22 +216,20 @@ one-step rollback.
 - The `3d_nav_ros2` container exists and uses the new mount layout
   (`/home/unitree/g1_3d_nav_ros2_repo/maps:/g1_3d_nav_ros2/maps`).
   If you're migrating from the old `/home/unitree/g1_3d_nav/maps`
-  mount, do this once:
+  mount or from the older `/root/maps` layout, do this once:
   ```bash
   ssh unitree@192.168.100.30
   cp /home/unitree/g1_3d_nav/maps/scans.pcd \
      /home/unitree/g1_3d_nav_ros2_repo/maps/scans.pcd
+  cd /home/unitree/g1_3d_nav_ros2_repo && git pull
   docker stop 3d_nav_ros2 && docker rm 3d_nav_ros2
-  bash /home/unitree/g1_3d_nav_ros2_repo/tools/recreate_3d_nav_ros2.sh
+  bash tools/recreate_3d_nav_ros2.sh
   ```
-- Container has the mapping wrappers in `/tmp/`. Sync them once after
-  every container recreate:
-  ```bash
-  for f in mapping_record.sh mapping_save.sh grid_accumulator.py; do
-    docker cp /home/unitree/g1_3d_nav_ros2_repo/tools/$f 3d_nav_ros2:/tmp/$f
-    docker exec 3d_nav_ros2 chmod +x /tmp/$f
-  done
-  ```
+- The repo is bind-mounted into the container at `/g1_3d_nav_ros2/`,
+  so the mapping wrappers (`tools/mapping/mapping_record.sh`,
+  `tools/mapping/mapping_save.sh`, `tools/mapping/grid_accumulator.py`)
+  are immediately available inside the container after `git pull`. No
+  `docker cp` step.
 
 ### Step 1 — bring up the localization stack
 
@@ -265,7 +257,7 @@ Floor tape works.
 ```bash
 # window B
 ssh unitree@192.168.100.30
-docker exec -it 3d_nav_ros2 /tmp/mapping_record.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_record.sh
 ```
 
 You should see:
@@ -304,7 +296,7 @@ This makes the post-map-restart alignment trivial.
 ```bash
 # window C
 ssh unitree@192.168.100.30
-docker exec -it 3d_nav_ros2 /tmp/mapping_save.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_save.sh
 ```
 
 Expected output:
@@ -419,14 +411,16 @@ All three tools:
   `is launch.sh running?` / `is nav2_launch.sh running?` hints on
   timeout
 
-### Sync the tools into the container (once per recreate)
+### Where the tools live (no docker cp needed)
 
-```bash
-for f in capture_waypoints.py goto_waypoint.py navigate_batch.py soft_stop.sh estop.sh; do
-  docker cp /home/unitree/g1_3d_nav_ros2_repo/tools/$f 3d_nav_ros2:/tmp/$f
-  docker exec 3d_nav_ros2 chmod +x /tmp/$f
-done
-```
+The Gotop tools are at `tools/gotop/` in this repo. The brake
+wrappers (`soft_stop.sh`, `estop.sh`) are at the top of `tools/`.
+Because the repo is bind-mounted into the container at
+`/g1_3d_nav_ros2/`, every tool is immediately invocable as
+`/g1_3d_nav_ros2/tools/gotop/<name>` (or
+`/g1_3d_nav_ros2/tools/<brake>` for the brakes). After `git pull`
+on the host, new versions are available inside the container with
+no `docker cp`.
 
 ### Capturing waypoints
 
@@ -436,7 +430,7 @@ Need: `launch.sh` running. (`nav2_launch.sh` not required for capture.)
 docker exec -it 3d_nav_ros2 bash -lc '
   source /opt/ros/humble/setup.bash
   source /botbrain_ws/install/setup.bash
-  python3 /tmp/capture_waypoints.py /tmp/waypoints.yaml
+  python3 /g1_3d_nav_ros2/tools/gotop/capture_waypoints.py /tmp/waypoints.yaml
 '
 ```
 
@@ -518,7 +512,7 @@ Operator on site, RC controller in hand (D-011 safety preconditions).
 docker exec -it 3d_nav_ros2 bash -lc '
   source /opt/ros/humble/setup.bash
   source /botbrain_ws/install/setup.bash
-  python3 /tmp/goto_waypoint.py /tmp/waypoints.yaml
+  python3 /g1_3d_nav_ros2/tools/gotop/goto_waypoint.py /tmp/waypoints.yaml
 '
 ```
 
@@ -573,18 +567,18 @@ docker exec -it 3d_nav_ros2 bash -lc '
   source /botbrain_ws/install/setup.bash
 
   # everything in the yaml × 3 rounds, randomise order each round
-  python3 /tmp/navigate_batch.py /tmp/waypoints.yaml --all --rounds 3 --shuffle
+  python3 /g1_3d_nav_ros2/tools/gotop/navigate_batch.py /tmp/waypoints.yaml --all --rounds 3 --shuffle
 
   # specific labels:
-  python3 /tmp/navigate_batch.py /tmp/waypoints.yaml \
+  python3 /g1_3d_nav_ros2/tools/gotop/navigate_batch.py /tmp/waypoints.yaml \
       --labels kitchen,door1,lab_corner --rounds 3
 
   # by group (yaml has a groups: section):
-  python3 /tmp/navigate_batch.py /tmp/waypoints.yaml \
+  python3 /g1_3d_nav_ros2/tools/gotop/navigate_batch.py /tmp/waypoints.yaml \
       --labels @kitchen_zone --rounds 3
 
   # mix labels and groups (auto-deduped):
-  python3 /tmp/navigate_batch.py /tmp/waypoints.yaml \
+  python3 /g1_3d_nav_ros2/tools/gotop/navigate_batch.py /tmp/waypoints.yaml \
       --labels @kitchen_zone,@lab,door1 --rounds 3 --shuffle
 '
 ```
@@ -605,8 +599,8 @@ If you need to stop G1 while a script is running:
 | Way | Effect | When |
 |---|---|---|
 | **Ctrl-C** in the goto/batch terminal | Soft stop (cancel goal, zero-vel, G1 standing). Script exits | Most common — "wrong target, change my mind" |
-| **`docker exec -it 3d_nav_ros2 /tmp/soft_stop.sh`** in another terminal | Same soft stop, but doesn't exit the goto/batch script | Hands aren't on the goto terminal |
-| **`docker exec -it 3d_nav_ros2 /tmp/estop.sh`** | Hard stop + squat (toggle: 2nd call to undo) | Real emergency, G1 about to fall / hit something |
+| **`docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/soft_stop.sh`** in another terminal | Same soft stop, but doesn't exit the goto/batch script | Hands aren't on the goto terminal |
+| **`docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/estop.sh`** | Hard stop + squat (toggle: 2nd call to undo) | Real emergency, G1 about to fall / hit something |
 | **RC controller L2+B** | Hardware brake, independent of ROS | Always-available fallback |
 
 The two scripted brakes are documented in detail in the

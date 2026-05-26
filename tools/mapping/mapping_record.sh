@@ -17,8 +17,8 @@
 #     /cloud_registered_body_1, map->body TF flowing)
 #
 # Usage:
-#   docker exec -it 3d_nav_ros2 /tmp/mapping_record.sh
+#   docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_record.sh
 
 source /opt/ros/humble/setup.bash
 source /botbrain_ws/install/setup.bash
-exec python3 /tmp/grid_accumulator.py
+exec python3 /g1_3d_nav_ros2/tools/mapping/grid_accumulator.py

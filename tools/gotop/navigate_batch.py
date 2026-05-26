@@ -24,12 +24,12 @@ Usage:
     docker exec -it 3d_nav_ros2 bash -lc "
       source /opt/ros/humble/setup.bash
       source /botbrain_ws/install/setup.bash
-      python3 /tmp/navigate_batch.py /tmp/waypoints.yaml \\
+      python3 /g1_3d_nav_ros2/tools/gotop/navigate_batch.py /tmp/waypoints.yaml \\
           --labels kitchen,door1,corner --rounds 3 \\
           --output /tmp/batch_report.md
     "
     # or all labels in dict-iteration order:
-    #   python3 /tmp/navigate_batch.py /tmp/waypoints.yaml --all --rounds 3
+    #   python3 /g1_3d_nav_ros2/tools/gotop/navigate_batch.py /tmp/waypoints.yaml --all --rounds 3
 
 Requires the full Nav2 + g1_write_node stack (nav2_launch.sh) and an
 operator on site to satisfy D-011 safety preconditions and answer the

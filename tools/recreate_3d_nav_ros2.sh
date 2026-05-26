@@ -23,10 +23,13 @@ if docker ps -a --format '{{.Names}}' | grep -q '^3d_nav_ros2$'; then
     docker rm -f 3d_nav_ros2
 fi
 
-# Recreate with all mounts
+# Recreate with all mounts. The repo working tree is bind-mounted whole
+# at /g1_3d_nav_ros2 — tools/, maps/, docs/ all show up as subdirs, and
+# `git pull` on the host immediately makes new tools available inside
+# the container (no docker cp).
 docker run -d --name 3d_nav_ros2 \
     --network host --ipc host \
-    -v /home/unitree/g1_3d_nav_ros2_repo/maps:/g1_3d_nav_ros2/maps \
+    -v /home/unitree/g1_3d_nav_ros2_repo:/g1_3d_nav_ros2 \
     -v /home/unitree/botbrain_ws:/botbrain_ws \
     -v /usr/local/lib:/opt/robot_sdk/lib \
     -v /usr/local/include:/opt/robot_sdk/include \
