@@ -20,9 +20,11 @@ import argparse
 import math
 import sys
 import time
+from threading import Thread
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 import yaml
@@ -32,6 +34,7 @@ SAMPLE_HZ = 30
 SAMPLE_DURATION_S = 1.0
 SOURCE_FRAME = "map"
 TARGET_FRAME = "body"
+TF_STREAM_WAIT_S = 10.0
 
 
 def quat_to_yaw(qx, qy, qz, qw):
@@ -44,12 +47,16 @@ def normalize_quat(qx, qy, qz, qw):
     return qx / n, qy / n, qz / n, qw / n
 
 
-def sample_pose(node, buf, duration_s):
+def sample_pose(buf, duration_s):
+    """Collect TF samples for `duration_s` and return their mean.
+
+    Assumes a background executor is already spinning the node so the
+    TransformListener buffer stays current.
+    """
     samples = []
     end = time.time() + duration_s
     period = 1.0 / SAMPLE_HZ
     while time.time() < end:
-        rclpy.spin_once(node, timeout_sec=period)
         try:
             t = buf.lookup_transform(SOURCE_FRAME, TARGET_FRAME,
                                      rclpy.time.Time())
@@ -77,6 +84,21 @@ def sample_pose(node, buf, duration_s):
     }
 
 
+def wait_for_tf_stream(buf, timeout_s):
+    """Verify map->body TF is actually flowing before asking the operator
+    to drive G1 around. Returns True if a transform was successfully looked
+    up at least once within timeout."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            buf.lookup_transform(SOURCE_FRAME, TARGET_FRAME,
+                                 rclpy.time.Time())
+            return True
+        except Exception:
+            time.sleep(0.2)
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("output", help="output yaml path")
@@ -88,15 +110,32 @@ def main():
     buf = Buffer()
     TransformListener(buf, node)
 
-    print(f"Will capture {args.count} waypoints; output -> {args.output}")
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    spin_thread = Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
+
+    print(f"Checking {SOURCE_FRAME}->{TARGET_FRAME} TF stream...", end=" ", flush=True)
+    if not wait_for_tf_stream(buf, TF_STREAM_WAIT_S):
+        print(f"TIMEOUT after {TF_STREAM_WAIT_S:.0f}s")
+        print("  -> launch.sh is not running, or fast_lio / open3d_loc didn't")
+        print(f"     start. Run /root/launch.sh and wait for ALL 6 NODES RUNNING.")
+        executor.shutdown()
+        rclpy.shutdown()
+        return 1
+    print("OK")
+
+    print(f"\nWill capture {args.count} waypoints; output -> {args.output}")
     print(f"For each waypoint: drive G1 there, wait until physically still, press Enter.\n")
 
     waypoints = []
     for i in range(1, args.count + 1):
         input(f"  waypoint {i}/{args.count} — press Enter when G1 is stable: ")
-        pose = sample_pose(node, buf, SAMPLE_DURATION_S)
+        pose = sample_pose(buf, SAMPLE_DURATION_S)
         if pose is None:
-            print(f"    FAILED to read TF (is launch.sh running?). Aborting.")
+            print(f"    FAILED to read TF during sampling. Aborting.")
+            executor.shutdown()
+            rclpy.shutdown()
             return 1
         pose["name"] = f"wp{i}"
         print(f"    captured wp{i}: x={pose['x']:.3f} y={pose['y']:.3f} "
@@ -111,7 +150,7 @@ def main():
         yaml.dump(out, f, sort_keys=False, default_flow_style=False)
     print(f"\nWrote {len(waypoints)} waypoints to {args.output}.")
 
-    node.destroy_node()
+    executor.shutdown()
     rclpy.shutdown()
     return 0
 

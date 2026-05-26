@@ -26,13 +26,14 @@ import argparse
 import math
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from threading import Thread
 from typing import List, Optional
 
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from rclpy.duration import Duration
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
@@ -46,6 +47,9 @@ SAMPLE_DURATION_S = 1.0
 SOURCE_FRAME = "map"
 TARGET_FRAME = "body"
 GOAL_TIMEOUT_S = 60.0
+TF_STREAM_WAIT_S = 10.0
+ACTION_SERVER_WAIT_S = 15.0
+POLL_PERIOD_S = 0.05
 
 
 def quat_to_yaw(qx, qy, qz, qw):
@@ -80,12 +84,12 @@ class SegmentResult:
     physical_sanity: str
 
 
-def sample_pose(node, buf):
+def sample_pose(buf):
+    """Mean of TF samples over SAMPLE_DURATION_S; assumes background spin."""
     samples = []
     end = time.time() + SAMPLE_DURATION_S
     period = 1.0 / SAMPLE_HZ
     while time.time() < end:
-        rclpy.spin_once(node, timeout_sec=period)
         try:
             t = buf.lookup_transform(SOURCE_FRAME, TARGET_FRAME,
                                      rclpy.time.Time())
@@ -127,29 +131,48 @@ def status_str(s):
     }.get(s, f"STATUS_{s}")
 
 
+def wait_future(fut, timeout_s):
+    """Poll a rclpy.task.Future to completion. Background executor is
+    spinning, so the future's callbacks fire on its thread."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if fut.done():
+            return True
+        time.sleep(POLL_PERIOD_S)
+    return False
+
+
 def send_one(node, action_client, pose):
+    if not action_client.wait_for_server(timeout_sec=ACTION_SERVER_WAIT_S):
+        return False, "no_server", 0.0
     goal = NavigateToPose.Goal()
     goal.pose = pose
-    if not action_client.wait_for_server(timeout_sec=10.0):
-        return False, "no_server", 0.0
     t0 = time.time()
     fut = action_client.send_goal_async(goal)
-    rclpy.spin_until_future_complete(node, fut, timeout_sec=10.0)
+    if not wait_future(fut, 10.0):
+        return False, "send_timeout", time.time() - t0
     handle = fut.result()
     if not handle or not handle.accepted:
         return False, "rejected", time.time() - t0
     res_fut = handle.get_result_async()
-    deadline = time.time() + GOAL_TIMEOUT_S
-    while time.time() < deadline:
-        rclpy.spin_once(node, timeout_sec=0.5)
-        if res_fut.done():
-            break
-    if not res_fut.done():
+    if not wait_future(res_fut, GOAL_TIMEOUT_S):
         handle.cancel_goal_async()
         return False, "timeout", time.time() - t0
     res = res_fut.result()
     return (res.status == GoalStatus.STATUS_SUCCEEDED,
             status_str(res.status), time.time() - t0)
+
+
+def wait_for_tf_stream(buf, timeout_s):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            buf.lookup_transform(SOURCE_FRAME, TARGET_FRAME,
+                                 rclpy.time.Time())
+            return True
+        except Exception:
+            time.sleep(0.2)
+    return False
 
 
 def write_report(results: List[SegmentResult], path):
@@ -211,6 +234,27 @@ def main():
     TransformListener(buf, node)
     ac = ActionClient(node, NavigateToPose, "navigate_to_pose")
 
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    spin_thread = Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
+
+    print(f"Checking {SOURCE_FRAME}->{TARGET_FRAME} TF stream...", end=" ", flush=True)
+    if not wait_for_tf_stream(buf, TF_STREAM_WAIT_S):
+        print("TIMEOUT — is launch.sh running?")
+        executor.shutdown()
+        rclpy.shutdown()
+        return 1
+    print("OK")
+
+    print("Waiting for /navigate_to_pose action server...", end=" ", flush=True)
+    if not ac.wait_for_server(timeout_sec=ACTION_SERVER_WAIT_S):
+        print(f"TIMEOUT — is nav2_launch.sh running?")
+        executor.shutdown()
+        rclpy.shutdown()
+        return 1
+    print("OK\n")
+
     results: List[SegmentResult] = []
     for round_idx in range(1, args.rounds + 1):
         print(f"\n=== Round {round_idx}/{args.rounds} ===")
@@ -221,7 +265,7 @@ def main():
             success, status, dur = send_one(node, ac, pose)
             print(f"     nav2: {status} ({dur:.1f}s)")
 
-            reached = sample_pose(node, buf) if success else None
+            reached = sample_pose(buf) if success else None
             if reached:
                 rx, ry, ryaw = reached
                 xy_err = math.hypot(rx - wp["x"], ry - wp["y"])
@@ -244,7 +288,7 @@ def main():
 
     write_report(results, args.output)
     print(f"\nReport written: {args.output}")
-    node.destroy_node()
+    executor.shutdown()
     rclpy.shutdown()
     return 0
 
