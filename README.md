@@ -155,8 +155,8 @@ sufficient.
 
 | Tool | Behaviour | When to use |
 |---|---|---|
-| `scripts/soft_stop.sh` | Cancels all `/navigate_to_pose` goals → twist_mux fallback to `cmd_vel_zero` (priority 1) → G1 stops **standing in sport mode** | Routine "stop the test". G1 immediately ready to accept a new goal. |
-| `scripts/estop.sh` | Calls `/emergency_stop` service → `emergency_flag_` set, SDK `stop_move()`, then `BALANCE_SQUAT_SQUAT_STAND` → G1 **stops + squats**. Toggle: second call clears `emergency_flag_` and G1 stands back up. | Real emergency. Fail-passive: even if balance fails mid-stop, G1 lands in a low stable posture. |
+| `tools/soft_stop.sh` | Cancels all `/navigate_to_pose` goals → twist_mux fallback to `cmd_vel_zero` (priority 1) → G1 stops **standing in sport mode** | Routine "stop the test". G1 immediately ready to accept a new goal. |
+| `tools/estop.sh` | Calls `/emergency_stop` service → `emergency_flag_` set, SDK `stop_move()`, then `BALANCE_SQUAT_SQUAT_STAND` → G1 **stops + squats**. Toggle: second call clears `emergency_flag_` and G1 stands back up. | Real emergency. Fail-passive: even if balance fails mid-stop, G1 lands in a low stable posture. |
 
 Both wrappers are designed to be `docker cp`'d into the container under
 `/tmp/`, so the operator-side invocation is single-line:
@@ -172,8 +172,8 @@ so they work regardless of the caller shell.
 Quick sync into a freshly-started container (Leo side):
 
 ```bash
-gh api repos/leokkzzhzzz/g1_3d_nav_ros2/contents/scripts/soft_stop.sh --jq .content | base64 -d > /tmp/soft_stop.sh
-gh api repos/leokkzzhzzz/g1_3d_nav_ros2/contents/scripts/estop.sh     --jq .content | base64 -d > /tmp/estop.sh
+gh api repos/leokkzzhzzz/g1_3d_nav_ros2/contents/tools/soft_stop.sh --jq .content | base64 -d > /tmp/soft_stop.sh
+gh api repos/leokkzzhzzz/g1_3d_nav_ros2/contents/tools/estop.sh     --jq .content | base64 -d > /tmp/estop.sh
 scp /tmp/soft_stop.sh /tmp/estop.sh unitree@192.168.100.30:/tmp/
 ssh unitree@192.168.100.30 'docker cp /tmp/soft_stop.sh 3d_nav_ros2:/tmp/ && docker cp /tmp/estop.sh 3d_nav_ros2:/tmp/ && docker exec 3d_nav_ros2 chmod +x /tmp/soft_stop.sh /tmp/estop.sh'
 ```

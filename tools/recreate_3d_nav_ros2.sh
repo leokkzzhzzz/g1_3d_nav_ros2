@@ -3,7 +3,7 @@
 # all required mounts for the merged-container Nav2 deployment.
 #
 # Run on G1 host. Uses the latest committed g1_nav_final:latest image (must
-# include nav2 + twist_mux apt packages — see scripts/install_nav2.sh).
+# include nav2 + twist_mux apt packages — see tools/install_nav2.sh).
 
 set -e
 

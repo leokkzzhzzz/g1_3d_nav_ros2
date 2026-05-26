@@ -1,26 +1,39 @@
 #!/usr/bin/env python3
-"""Drive G1 through a list of waypoints via NavigateToPose, R rounds.
+"""Batch waypoint accuracy test — drive G1 through a chosen subset of
+waypoints, R rounds each, and produce a per-segment + per-waypoint
+accuracy report.
 
-For each round, sequentially sends each waypoint as a NavigateToPose goal,
-waits for the action result, then samples map->body TF for 1 s to compute
-the achieved pose. Per-segment metrics (success / xy_err / yaw_err /
-duration / physical sanity) are written into a Markdown table at the end.
+Reads a waypoints YAML produced by capture_waypoints.py (dict format
+keyed by label). Operator selects which labels to traverse via
+`--labels a,b,c` or `--all` to traverse every label. Each round walks
+the labels in the given order; default 3 rounds for stochastic
+statistics.
+
+For each segment the script:
+  - sends a NavigateToPose goal to that waypoint
+  - waits for the action result (max GOAL_TIMEOUT_S, default 120 s)
+  - samples the achieved pose with a 1 s mean of map->body TF
+  - prompts the operator for a `physical_sanity (y/n/skip)` check
+  - records nav2 status, xy_err, yaw_err, duration
+
+NavigateToPose is used in series rather than FollowWaypoints because
+FollowWaypoints does not stop between waypoints, which prevents
+per-segment TF measurement.
 
 Usage:
     docker exec -it 3d_nav_ros2 bash -lc "
       source /opt/ros/humble/setup.bash
       source /botbrain_ws/install/setup.bash
-      python3 /tmp/navigate_5_waypoints.py /tmp/waypoints.yaml \\
-          --rounds 3 --output /tmp/walk_5wp_report.md
+      python3 /tmp/navigate_batch.py /tmp/waypoints.yaml \\
+          --labels kitchen,door1,corner --rounds 3 \\
+          --output /tmp/batch_report.md
     "
+    # or all labels in dict-iteration order:
+    #   python3 /tmp/navigate_batch.py /tmp/waypoints.yaml --all --rounds 3
 
 Requires the full Nav2 + g1_write_node stack (nav2_launch.sh) and an
 operator on site to satisfy D-011 safety preconditions and answer the
 'physical_sanity' prompt after each segment.
-
-NavigateToPose is used in series rather than FollowWaypoints because
-FollowWaypoints does not stop between waypoints, which prevents per-segment
-TF measurement.
 """
 import argparse
 import math
@@ -31,11 +44,7 @@ from dataclasses import dataclass
 from threading import Thread
 from typing import List, Optional
 
-# IMPORTANT: set RMW env before any rclpy / DDS C-extension import. The
-# 3d_nav_ros2 stack speaks rmw_zenoh_cpp; without this our Python process
-# falls back to the container default (rmw_fastrtps_cpp) and silently sees
-# zero topics from the running stack. setdefault leaves room for the
-# operator to override from the shell.
+# Set RMW env before any rclpy / DDS C-extension import.
 os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_zenoh_cpp")
 os.environ.setdefault(
     "ZENOH_CONFIG_OVERRIDE",
@@ -58,7 +67,7 @@ SAMPLE_HZ = 30
 SAMPLE_DURATION_S = 1.0
 SOURCE_FRAME = "map"
 TARGET_FRAME = "body"
-GOAL_TIMEOUT_S = 60.0
+GOAL_TIMEOUT_S = 120.0
 TF_STREAM_WAIT_S = 10.0
 ACTION_SERVER_WAIT_S = 15.0
 POLL_PERIOD_S = 0.05
@@ -81,7 +90,7 @@ def yaw_diff(a, b):
 @dataclass
 class SegmentResult:
     round_idx: int
-    wp_name: str
+    label: str
     goal_x: float
     goal_y: float
     goal_yaw: float
@@ -97,7 +106,6 @@ class SegmentResult:
 
 
 def sample_pose(buf):
-    """Mean of TF samples over SAMPLE_DURATION_S; assumes background spin."""
     samples = []
     end = time.time() + SAMPLE_DURATION_S
     period = 1.0 / SAMPLE_HZ
@@ -144,8 +152,6 @@ def status_str(s):
 
 
 def wait_future(fut, timeout_s):
-    """Poll a rclpy.task.Future to completion. Background executor is
-    spinning, so the future's callbacks fire on its thread."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         if fut.done():
@@ -187,11 +193,21 @@ def wait_for_tf_stream(buf, timeout_s):
     return False
 
 
+def load_yaml(path):
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    wps = data.get("waypoints", {}) or {}
+    if isinstance(wps, list):
+        wps = {wp.get("name", f"wp{i+1}"): {k: v for k, v in wp.items() if k != "name"}
+               for i, wp in enumerate(wps)}
+    return wps
+
+
 def write_report(results: List[SegmentResult], path):
     lines = [
-        "# Walk 5-waypoint accuracy report",
+        "# Batch waypoint accuracy report",
         "",
-        "| Round | WP | Goal (x,y,yaw°) | Reached (x,y,yaw°) | xy_err (m) | yaw_err (°) | duration (s) | nav2 | sanity |",
+        "| Round | Label | Goal (x,y,yaw°) | Reached (x,y,yaw°) | xy_err (m) | yaw_err (°) | duration (s) | nav2 | sanity |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
@@ -202,18 +218,18 @@ def write_report(results: List[SegmentResult], path):
             reached = f"({r.reached_x:.2f},{r.reached_y:.2f},{math.degrees(r.reached_yaw):.0f})"
             xy = f"{r.xy_err:.3f}"
             yaw = f"{r.yaw_err_deg:.1f}"
-        lines.append(f"| {r.round_idx} | {r.wp_name} | {goal} | {reached} | "
+        lines.append(f"| {r.round_idx} | {r.label} | {goal} | {reached} | "
                      f"{xy} | {yaw} | {r.duration_s:.1f} | {r.nav2_status} | {r.physical_sanity} |")
     lines.append("")
     lines.append("## Per-waypoint summary (across rounds)")
     lines.append("")
-    lines.append("| WP | success_rate | mean xy_err (m) | std xy_err | mean yaw_err (°) | std yaw_err |")
+    lines.append("| Label | success_rate | mean xy_err (m) | std xy_err | mean yaw_err (°) | std yaw_err |")
     lines.append("|---|---|---|---|---|---|")
-    by_wp = {}
+    by_label = {}
     for r in results:
-        by_wp.setdefault(r.wp_name, []).append(r)
-    for name in sorted(by_wp):
-        rs = by_wp[name]
+        by_label.setdefault(r.label, []).append(r)
+    for label in sorted(by_label):
+        rs = by_label[label]
         succ = sum(1 for x in rs if x.success)
         xy = [x.xy_err for x in rs if x.xy_err is not None]
         yaw = [x.yaw_err_deg for x in rs if x.yaw_err_deg is not None]
@@ -221,57 +237,78 @@ def write_report(results: List[SegmentResult], path):
         s_xy = (sum((v - m_xy) ** 2 for v in xy) / len(xy)) ** 0.5 if xy else float("nan")
         m_yaw = sum(yaw) / len(yaw) if yaw else float("nan")
         s_yaw = (sum((v - m_yaw) ** 2 for v in yaw) / len(yaw)) ** 0.5 if yaw else float("nan")
-        lines.append(f"| {name} | {succ}/{len(rs)} | {m_xy:.3f} | {s_xy:.3f} | "
+        lines.append(f"| {label} | {succ}/{len(rs)} | {m_xy:.3f} | {s_xy:.3f} | "
                      f"{m_yaw:.1f} | {s_yaw:.1f} |")
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
 
+def parse_label_list(args, available):
+    if args.all:
+        return list(available.keys())
+    if not args.labels:
+        return []
+    raw = [s.strip() for s in args.labels.split(",") if s.strip()]
+    missing = [s for s in raw if s not in available]
+    if missing:
+        print(f"  unknown label(s): {missing}")
+        return []
+    return raw
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("waypoints", help="yaml from capture_waypoints.py")
+    ap.add_argument("--labels", help="comma-separated label list (e.g. a,b,c)")
+    ap.add_argument("--all", action="store_true", help="visit every label in the yaml")
     ap.add_argument("--rounds", type=int, default=3)
-    ap.add_argument("--output", default="/tmp/walk_5wp_report.md")
+    ap.add_argument("--output", default="/tmp/batch_report.md")
     args = ap.parse_args()
 
-    with open(args.waypoints) as f:
-        data = yaml.safe_load(f)
-    wps = data["waypoints"]
-    print(f"Loaded {len(wps)} waypoints from {args.waypoints}")
-    print(f"Will run {args.rounds} rounds, {len(wps) * args.rounds} segments total.\n")
+    if not args.labels and not args.all:
+        ap.error("specify either --labels a,b,c or --all")
+
+    waypoints = load_yaml(args.waypoints)
+    labels = parse_label_list(args, waypoints)
+    if not labels:
+        return 1
+
+    print(f"Loaded {len(waypoints)} waypoints from {args.waypoints}")
+    print(f"Will visit {len(labels)} labels x {args.rounds} rounds = "
+          f"{len(labels) * args.rounds} segments:")
+    for label in labels:
+        wp = waypoints[label]
+        print(f"  {label:<20} x={wp['x']:7.3f}  y={wp['y']:7.3f}  "
+              f"yaw={math.degrees(wp['yaw']):6.1f}deg")
+    print()
 
     rclpy.init()
-    node = Node("walk_5wp")
+    node = Node("navigate_batch")
     buf = Buffer()
     TransformListener(buf, node)
     ac = ActionClient(node, NavigateToPose, "navigate_to_pose")
-
     executor = SingleThreadedExecutor()
     executor.add_node(node)
-    spin_thread = Thread(target=executor.spin, daemon=True)
-    spin_thread.start()
+    Thread(target=executor.spin, daemon=True).start()
 
     print(f"Checking {SOURCE_FRAME}->{TARGET_FRAME} TF stream...", end=" ", flush=True)
     if not wait_for_tf_stream(buf, TF_STREAM_WAIT_S):
         print("TIMEOUT — is launch.sh running?")
-        executor.shutdown()
-        rclpy.shutdown()
-        return 1
+        executor.shutdown(); rclpy.shutdown(); return 1
     print("OK")
 
     print("Waiting for /navigate_to_pose action server...", end=" ", flush=True)
     if not ac.wait_for_server(timeout_sec=ACTION_SERVER_WAIT_S):
-        print(f"TIMEOUT — is nav2_launch.sh running?")
-        executor.shutdown()
-        rclpy.shutdown()
-        return 1
+        print("TIMEOUT — is nav2_launch.sh running?")
+        executor.shutdown(); rclpy.shutdown(); return 1
     print("OK\n")
 
     results: List[SegmentResult] = []
     for round_idx in range(1, args.rounds + 1):
         print(f"\n=== Round {round_idx}/{args.rounds} ===")
-        for wp in wps:
-            print(f"\n  -> {wp['name']} (x={wp['x']:.2f} y={wp['y']:.2f} "
+        for label in labels:
+            wp = waypoints[label]
+            print(f"\n  -> {label} (x={wp['x']:.2f} y={wp['y']:.2f} "
                   f"yaw={math.degrees(wp['yaw']):.0f}deg)")
             pose = make_pose_stamped(node, wp)
             success, status, dur = send_one(node, ac, pose)
@@ -288,9 +325,13 @@ def main():
                 rx = ry = ryaw = None
                 xy_err = yaw_err_deg = None
 
-            sanity = input("     physical_sanity (y/n/skip): ").strip().lower() or "skip"
+            try:
+                sanity = input("     physical_sanity (y/n/skip): ").strip().lower() or "skip"
+            except (EOFError, KeyboardInterrupt):
+                sanity = "skip"
+                print()
             results.append(SegmentResult(
-                round_idx=round_idx, wp_name=wp["name"],
+                round_idx=round_idx, label=label,
                 goal_x=wp["x"], goal_y=wp["y"], goal_yaw=wp["yaw"],
                 success=success, nav2_status=status,
                 reached_x=rx, reached_y=ry, reached_yaw=ryaw,

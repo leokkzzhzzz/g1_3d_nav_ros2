@@ -102,11 +102,11 @@ Origin: rmw_zenoh_cpp 0.1.8 daemon implementation. Tracked in Roadmap R-002.
 
 ```bash
 # G1 host, after launch.sh + nav2_launch.sh have run for ~2 minutes
-ssh unitree@192.168.100.30 'docker cp ~/g1_3d_nav_ros2_repo/scripts/tracer_nav2_pipeline.sh 3d_nav_ros2:/tmp/'
+ssh unitree@192.168.100.30 'docker cp ~/g1_3d_nav_ros2_repo/tools/tracer_nav2_pipeline.sh 3d_nav_ros2:/tmp/'
 ssh unitree@192.168.100.30 'docker exec 3d_nav_ros2 bash /tmp/tracer_nav2_pipeline.sh'
 ```
 
-(Full tracer script is in `scripts/tracer_nav2_pipeline.sh`.)
+(Full tracer script is in `tools/tracer_nav2_pipeline.sh`.)
 
 ## What still does not work / out of scope
 

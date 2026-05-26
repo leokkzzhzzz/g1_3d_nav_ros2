@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Single-waypoint navigation. Operator picks a waypoint by index.
+"""Send G1 to a single waypoint by label.
 
-Reads a waypoints YAML file produced by capture_waypoints.py, lists the
-contents, then enters an interactive loop where the operator types a
-waypoint number (1..N) and the script sends a NavigateToPose goal there.
-After each goal the script reports nav2 status and the achieved-vs-goal
-pose error (sampled with the same 1 s mean as navigate_5_waypoints.py).
+Reads a waypoints YAML file produced by capture_waypoints.py (dict format
+keyed by label). Lists the available labels, then enters an interactive
+loop: type a label, the script sends a NavigateToPose goal there, waits
+for the result, reports the achieved-vs-goal pose error.
 
-Use this for ad-hoc inspection of individual waypoints — drive G1 to wp2,
-look at it, drive to wp5, look at it. For statistical accuracy across all
-five waypoints in a fixed schedule, use navigate_5_waypoints.py instead.
+Use this for ad-hoc inspection of individual waypoints — drive G1 to the
+"kitchen" waypoint, look at it, drive to "door1", look at it. For
+batch statistical accuracy across many waypoints in a fixed schedule,
+use navigate_batch.py instead.
 
 Usage:
     docker exec -it 3d_nav_ros2 bash -lc "
@@ -21,6 +21,11 @@ Usage:
 While G1 is moving, the script blocks on the action result. To preempt,
 run /tmp/soft_stop.sh in a separate window — it cancels the current goal
 and G1 stops in place still standing in sport mode.
+
+Built-in commands at the prompt:
+  <label>            navigate to that waypoint
+  list / ls          show all available labels
+  q / quit / exit    quit (Ctrl-D works too)
 """
 import argparse
 import math
@@ -29,8 +34,7 @@ import sys
 import time
 from threading import Thread
 
-# Set RMW env before any rclpy / DDS C-extension import (see
-# capture_waypoints.py for the full rationale).
+# Set RMW env before any rclpy / DDS C-extension import.
 os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_zenoh_cpp")
 os.environ.setdefault(
     "ZENOH_CONFIG_OVERRIDE",
@@ -159,29 +163,43 @@ def wait_for_tf_stream(buf, timeout_s):
     return False
 
 
+def load_yaml(path):
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    wps = data.get("waypoints", {}) or {}
+    if isinstance(wps, list):
+        wps = {wp.get("name", f"wp{i+1}"): {k: v for k, v in wp.items() if k != "name"}
+               for i, wp in enumerate(wps)}
+    return wps
+
+
+def print_labels(waypoints):
+    if not waypoints:
+        print("  (no waypoints in file)")
+        return
+    for label in sorted(waypoints.keys()):
+        wp = waypoints[label]
+        print(f"  {label:<20} x={wp['x']:7.3f}  y={wp['y']:7.3f}  "
+              f"yaw={math.degrees(wp['yaw']):6.1f}deg")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("waypoints", help="yaml from capture_waypoints.py")
     args = ap.parse_args()
 
-    with open(args.waypoints) as f:
-        data = yaml.safe_load(f)
-    wps = data["waypoints"]
-    print(f"Loaded {len(wps)} waypoints from {args.waypoints}:")
-    for i, wp in enumerate(wps, 1):
-        print(f"  {i}. {wp['name']:<5}  x={wp['x']:6.2f}  y={wp['y']:6.2f}  "
-              f"yaw={math.degrees(wp['yaw']):6.1f}°")
+    waypoints = load_yaml(args.waypoints)
+    print(f"Loaded {len(waypoints)} waypoints from {args.waypoints}:")
+    print_labels(waypoints)
 
     rclpy.init()
     node = Node("goto_waypoint")
     buf = Buffer()
     TransformListener(buf, node)
     ac = ActionClient(node, NavigateToPose, "navigate_to_pose")
-
     executor = SingleThreadedExecutor()
     executor.add_node(node)
-    spin_thread = Thread(target=executor.spin, daemon=True)
-    spin_thread.start()
+    Thread(target=executor.spin, daemon=True).start()
 
     print(f"\nChecking {SOURCE_FRAME}->{TARGET_FRAME} TF stream...", end=" ", flush=True)
     if not wait_for_tf_stream(buf, TF_STREAM_WAIT_S):
@@ -195,31 +213,33 @@ def main():
         executor.shutdown(); rclpy.shutdown(); return 1
     print("OK")
 
-    n = len(wps)
-    print(f"\nReady. To preempt mid-goal, run /tmp/soft_stop.sh from another window.\n")
+    print("\nCommands at prompt:")
+    print("  <label>          send G1 to that waypoint")
+    print("  list / ls        show all available labels")
+    print("  q / quit         exit\n")
+    print("To preempt mid-goal, run /tmp/soft_stop.sh from another window.\n")
 
     while True:
         try:
-            sel = input(f"Which waypoint? (1-{n}, or q to quit): ").strip().lower()
+            line = input("goto> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
-        if sel in ("q", "quit", "exit"):
+        if not line:
+            continue
+        if line in ("q", "quit", "exit"):
             break
-        if not sel:
-            continue
-        try:
-            idx = int(sel)
-        except ValueError:
-            print(f"  not a number: {sel!r}")
-            continue
-        if not 1 <= idx <= n:
-            print(f"  out of range; pick 1..{n}")
+        if line in ("list", "ls"):
+            print_labels(waypoints); continue
+
+        label = line
+        if label not in waypoints:
+            print(f"  no such label: {label!r}. Type 'list' to see options.")
             continue
 
-        wp = wps[idx - 1]
-        print(f"\n  -> {wp['name']} (x={wp['x']:.2f} y={wp['y']:.2f} "
-              f"yaw={math.degrees(wp['yaw']):.0f}°)")
+        wp = waypoints[label]
+        print(f"\n  -> {label} (x={wp['x']:.2f} y={wp['y']:.2f} "
+              f"yaw={math.degrees(wp['yaw']):.0f}deg)")
         pose = make_pose_stamped(node, wp)
         success, status, dur = send_one(ac, pose)
         print(f"     nav2: {status} ({dur:.1f}s)")
@@ -229,9 +249,8 @@ def main():
                 rx, ry, ryaw = reached
                 xy_err = math.hypot(rx - wp["x"], ry - wp["y"])
                 yaw_err_deg = math.degrees(yaw_diff(ryaw, wp["yaw"]))
-                print(f"     reached: ({rx:.3f}, {ry:.3f}, "
-                      f"{math.degrees(ryaw):.1f}°)  "
-                      f"xy_err={xy_err:.3f}m  yaw_err={yaw_err_deg:.1f}°")
+                print(f"     reached: ({rx:.3f}, {ry:.3f}, {math.degrees(ryaw):.1f}deg)"
+                      f"  xy_err={xy_err:.3f}m  yaw_err={yaw_err_deg:.1f}deg")
         print()
 
     print("bye")

@@ -17,7 +17,7 @@ rmw_zenoh_cpp. As a result, `/cmd_vel_zero` is silent, twist_mux has no
 priority-1 fallback, and `/cmd_vel_out` goes idle whenever Nav2 stops
 publishing `/cmd_vel_nav`.
 
-**Fix:** Add to `scripts/nav2_launch.sh` after `[2/2] twist_mux ... OK`:
+**Fix:** Add to `tools/nav2_launch.sh` after `[2/2] twist_mux ... OK`:
 ```bash
 sleep 2
 ros2 lifecycle set /zero_vel_publisher configure
