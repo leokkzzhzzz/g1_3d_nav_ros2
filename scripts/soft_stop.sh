@@ -36,5 +36,9 @@ export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 export ZENOH_CONFIG_OVERRIDE='mode="client";connect/endpoints=["tcp/127.0.0.1:7448"]'
 
 echo "Soft-stop: cancelling all /navigate_to_pose goals (G1 will stop in place, no squat)..."
-ros2 service call /navigate_to_pose/_action/cancel_goal action_msgs/srv/CancelGoal \
-    '{goal_info: {goal_id: {uuid: []}, stamp: {sec: 0, nanosec: 0}}}'
+# Empty '{}' means use default field values: uuid -> 16 zero bytes,
+# stamp -> {0,0}. action_msgs/srv/CancelGoal interprets that as
+# cancel-all (zero UUID + zero stamp). Don't pass `uuid: []` — the
+# field is uint8[16] (fixed size) and ros2 cli rejects size-0 arrays
+# with "must have a size of 16".
+ros2 service call /navigate_to_pose/_action/cancel_goal action_msgs/srv/CancelGoal '{}'
