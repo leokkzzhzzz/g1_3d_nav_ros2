@@ -122,24 +122,30 @@ def wait_for_tf_stream(buf, timeout_s):
 
 
 def load_existing(path):
+    """Returns (waypoints_dict, groups_dict). Preserves groups section
+    untouched so that operators can hand-edit it in the yaml without
+    fear of capture_waypoints clobbering their groups."""
     if not os.path.exists(path):
-        return {}
+        return {}, {}
     try:
         with open(path) as f:
             data = yaml.safe_load(f) or {}
         wps = data.get("waypoints", {}) or {}
+        groups = data.get("groups", {}) or {}
         if isinstance(wps, list):
             print(f"  warning: {path} is in legacy list format; converting to dict.")
             wps = {wp.get("name", f"wp{i+1}"): {k: v for k, v in wp.items() if k != "name"}
                    for i, wp in enumerate(wps)}
-        return wps
+        return wps, groups
     except Exception as e:
         print(f"  failed to load existing yaml: {e}")
-        return {}
+        return {}, {}
 
 
-def save_yaml(path, waypoints):
+def save_yaml(path, waypoints, groups):
     out = {"frame_id": SOURCE_FRAME, "waypoints": waypoints}
+    if groups:
+        out["groups"] = groups
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         yaml.dump(out, f, sort_keys=False, default_flow_style=False)
@@ -160,13 +166,35 @@ def cmd_list(waypoints):
     print(f"  total: {len(waypoints)}")
 
 
-def cmd_del(waypoints, label, path):
+def cmd_del(waypoints, groups, label, path):
     if label not in waypoints:
         print(f"  no such label: {label!r}")
         return
     del waypoints[label]
-    save_yaml(path, waypoints)
+    # Also remove from any group that referenced it
+    for g_name, g_list in list(groups.items()):
+        if label in g_list:
+            g_list.remove(label)
+    save_yaml(path, waypoints, groups)
     print(f"  deleted {label}")
+
+
+def cmd_rename(waypoints, groups, old, new, path):
+    if old not in waypoints:
+        print(f"  no such label: {old!r}")
+        return
+    if not LABEL_RE.match(new):
+        print(f"  invalid new label {new!r}: must match [A-Za-z][A-Za-z0-9_-]*")
+        return
+    if new in waypoints:
+        print(f"  target label {new!r} already exists; del it first or pick another name")
+        return
+    waypoints[new] = waypoints.pop(old)
+    # Update group references
+    for g_name, g_list in groups.items():
+        groups[g_name] = [new if x == old else x for x in g_list]
+    save_yaml(path, waypoints, groups)
+    print(f"  renamed {old} -> {new}")
 
 
 def main():
@@ -190,18 +218,21 @@ def main():
         executor.shutdown(); rclpy.shutdown(); return 1
     print("OK")
 
-    waypoints = load_existing(args.output)
+    waypoints, groups = load_existing(args.output)
     if waypoints:
         print(f"\nLoaded {len(waypoints)} existing waypoints from {args.output}:")
         cmd_list(waypoints)
+        if groups:
+            print(f"  (groups defined: {', '.join(groups.keys())} — preserved on save)")
     else:
         print(f"\nStarting fresh; output -> {args.output}")
 
     print("\nCommands at prompt:")
-    print("  <label>          capture current pose under that label")
-    print("  list / ls        show all captured waypoints")
-    print("  del <label>      delete a waypoint")
-    print("  q / quit         save and exit (Ctrl-D works too)\n")
+    print("  <label>            capture current pose under that label")
+    print("  list / ls          show all captured waypoints")
+    print("  del <label>        delete a waypoint")
+    print("  rename <old> <new> rename a waypoint (group refs updated too)")
+    print("  q / quit           save and exit (Ctrl-D works too)\n")
 
     while True:
         try:
@@ -216,7 +247,13 @@ def main():
         if line in ("list", "ls"):
             cmd_list(waypoints); continue
         if line.startswith("del "):
-            cmd_del(waypoints, line[4:].strip(), args.output); continue
+            cmd_del(waypoints, groups, line[4:].strip(), args.output); continue
+        if line.startswith("rename "):
+            parts = line[7:].split()
+            if len(parts) != 2:
+                print("  usage: rename <old> <new>")
+                continue
+            cmd_rename(waypoints, groups, parts[0], parts[1], args.output); continue
 
         label = line
         if not LABEL_RE.match(label):
@@ -242,11 +279,11 @@ def main():
                 print(f"  refreshing {label} ({d*100:.1f} cm shift)")
 
         waypoints[label] = pose
-        save_yaml(args.output, waypoints)
+        save_yaml(args.output, waypoints, groups)
         print(f"  captured ", end="")
         print_pose_line(label, pose)
 
-    save_yaml(args.output, waypoints)
+    save_yaml(args.output, waypoints, groups)
     print(f"\nSaved {len(waypoints)} waypoints to {args.output}.")
     executor.shutdown()
     rclpy.shutdown()

@@ -38,6 +38,7 @@ operator on site to satisfy D-011 safety preconditions and answer the
 import argparse
 import math
 import os
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -194,13 +195,15 @@ def wait_for_tf_stream(buf, timeout_s):
 
 
 def load_yaml(path):
+    """Returns (waypoints_dict, groups_dict)."""
     with open(path) as f:
         data = yaml.safe_load(f) or {}
     wps = data.get("waypoints", {}) or {}
+    groups = data.get("groups", {}) or {}
     if isinstance(wps, list):
         wps = {wp.get("name", f"wp{i+1}"): {k: v for k, v in wp.items() if k != "name"}
                for i, wp in enumerate(wps)}
-    return wps
+    return wps, groups
 
 
 def write_report(results: List[SegmentResult], path):
@@ -243,39 +246,75 @@ def write_report(results: List[SegmentResult], path):
         f.write("\n".join(lines) + "\n")
 
 
-def parse_label_list(args, available):
+def parse_label_list(args, available, groups):
+    """Resolve --labels into a concrete list of labels.
+
+    --all takes precedence and returns every label in the yaml.
+    Otherwise --labels is a comma-separated mix of:
+      - bare labels  (must exist in `available`)
+      - @groupname   (expanded to that group's member list)
+    Duplicates are preserved on first occurrence and dropped on later
+    repeats — `a,a,b` → `a,b`. Unknown labels / groups → empty + error.
+    """
     if args.all:
         return list(available.keys())
     if not args.labels:
         return []
     raw = [s.strip() for s in args.labels.split(",") if s.strip()]
-    missing = [s for s in raw if s not in available]
+    expanded = []
+    for tok in raw:
+        if tok.startswith("@"):
+            gname = tok[1:]
+            if gname not in groups:
+                print(f"  unknown group: @{gname}. Available groups: "
+                      f"{', '.join(groups.keys()) or '(none)'}")
+                return []
+            expanded.extend(groups[gname])
+        else:
+            expanded.append(tok)
+    # Validate + dedup (preserve first-seen order)
+    seen = set()
+    final = []
+    missing = []
+    for lab in expanded:
+        if lab in seen:
+            continue
+        seen.add(lab)
+        if lab not in available:
+            missing.append(lab)
+            continue
+        final.append(lab)
     if missing:
         print(f"  unknown label(s): {missing}")
         return []
-    return raw
+    return final
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("waypoints", help="yaml from capture_waypoints.py")
-    ap.add_argument("--labels", help="comma-separated label list (e.g. a,b,c)")
+    ap.add_argument("--labels", help="comma-separated mix of labels and @groups (e.g. a,b,@kitchen_zone)")
     ap.add_argument("--all", action="store_true", help="visit every label in the yaml")
     ap.add_argument("--rounds", type=int, default=3)
+    ap.add_argument("--shuffle", action="store_true",
+                    help="randomise waypoint order within each round (different seed per round)")
     ap.add_argument("--output", default="/tmp/batch_report.md")
     args = ap.parse_args()
 
     if not args.labels and not args.all:
-        ap.error("specify either --labels a,b,c or --all")
+        ap.error("specify either --labels a,b,@group or --all")
 
-    waypoints = load_yaml(args.waypoints)
-    labels = parse_label_list(args, waypoints)
+    waypoints, groups = load_yaml(args.waypoints)
+    labels = parse_label_list(args, waypoints, groups)
     if not labels:
         return 1
 
     print(f"Loaded {len(waypoints)} waypoints from {args.waypoints}")
+    if groups:
+        print(f"Groups defined: {', '.join(groups.keys())}")
+    shuffle_note = " (shuffled per round)" if args.shuffle else ""
     print(f"Will visit {len(labels)} labels x {args.rounds} rounds = "
-          f"{len(labels) * args.rounds} segments:")
+          f"{len(labels) * args.rounds} segments{shuffle_note}:")
     for label in labels:
         wp = waypoints[label]
         print(f"  {label:<20} x={wp['x']:7.3f}  y={wp['y']:7.3f}  "
@@ -305,8 +344,14 @@ def main():
 
     results: List[SegmentResult] = []
     for round_idx in range(1, args.rounds + 1):
-        print(f"\n=== Round {round_idx}/{args.rounds} ===")
-        for label in labels:
+        round_labels = list(labels)
+        if args.shuffle:
+            random.shuffle(round_labels)
+            print(f"\n=== Round {round_idx}/{args.rounds} (shuffled: "
+                  f"{','.join(round_labels)}) ===")
+        else:
+            print(f"\n=== Round {round_idx}/{args.rounds} ===")
+        for label in round_labels:
             wp = waypoints[label]
             print(f"\n  -> {label} (x={wp['x']:.2f} y={wp['y']:.2f} "
                   f"yaw={math.degrees(wp['yaw']):.0f}deg)")
