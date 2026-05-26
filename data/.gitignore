@@ -1,0 +1,4 @@
+# Per-environment runtime data; only the README is tracked.
+*
+!.gitignore
+!README.md

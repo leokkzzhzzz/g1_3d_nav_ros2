@@ -427,19 +427,22 @@ no `docker cp`.
 Need: `launch.sh` running. (`nav2_launch.sh` not required for capture.)
 
 ```bash
-docker exec -it 3d_nav_ros2 bash -lc '
-  source /opt/ros/humble/setup.bash
-  source /botbrain_ws/install/setup.bash
-  python3 /g1_3d_nav_ros2/tools/gotop/capture_waypoints.py /tmp/waypoints.yaml
-'
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/capture.sh
 ```
+
+The wrapper sources ROS env, points the underlying python at the
+default yaml `/g1_3d_nav_ros2/data/waypoints.yaml` (persistent —
+survives container stop/start because `/g1_3d_nav_ros2/data/` is
+the bind-mounted host repo working tree). Override with
+`env WAYPOINTS_YAML=/some/path.yaml ...` if you need a separate
+captures file.
 
 You'll see:
 
 ```
 Checking map->body TF stream... OK
 
-Loaded N existing waypoints from /tmp/waypoints.yaml:
+Loaded N existing waypoints from /g1_3d_nav_ros2/data/waypoints.yaml:
   kitchen          x=  1.230  y=  4.560  yaw=  90.0deg
   door1            x=  7.890  y=  1.010  yaw=   0.0deg
   ...
@@ -509,12 +512,14 @@ Need: `launch.sh` **and** `nav2_launch.sh` running, plus a `waypoints.yaml`.
 Operator on site, RC controller in hand (D-011 safety preconditions).
 
 ```bash
-docker exec -it 3d_nav_ros2 bash -lc '
-  source /opt/ros/humble/setup.bash
-  source /botbrain_ws/install/setup.bash
-  python3 /g1_3d_nav_ros2/tools/gotop/goto_waypoint.py /tmp/waypoints.yaml
-'
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/goto.sh
 ```
+
+The wrapper points the script at the default yaml
+`/g1_3d_nav_ros2/data/waypoints.yaml` and the default CSV history
+`/g1_3d_nav_ros2/data/goto_history.csv`. Both persist across container
+stop/start. Override via `WAYPOINTS_YAML=/some/path.yaml ...` or by
+appending `--csv /some/path.csv` to the command.
 
 Prompt:
 
@@ -543,7 +548,7 @@ point of the soft stop, vs `estop.sh` which fail-passively squats G1.
 #### CSV history (automatic)
 
 Every segment, success or failure, appends a row to
-`/tmp/goto_history.csv`:
+`/g1_3d_nav_ros2/data/goto_history.csv`:
 
 ```csv
 timestamp,label,goal_x,goal_y,goal_yaw_deg,nav2_status,duration_s,reached_x,reached_y,reached_yaw_deg,xy_err_m,yaw_err_deg
@@ -562,28 +567,29 @@ Operator on site, ready to answer `physical_sanity (y/n/skip)` after
 each segment.
 
 ```bash
-docker exec -it 3d_nav_ros2 bash -lc '
-  source /opt/ros/humble/setup.bash
-  source /botbrain_ws/install/setup.bash
+# everything in the yaml × 3 rounds, randomise order each round
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
+    --all --rounds 3 --shuffle
 
-  # everything in the yaml × 3 rounds, randomise order each round
-  python3 /g1_3d_nav_ros2/tools/gotop/navigate_batch.py /tmp/waypoints.yaml --all --rounds 3 --shuffle
+# specific labels
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
+    --labels kitchen,door1,lab_corner --rounds 3
 
-  # specific labels:
-  python3 /g1_3d_nav_ros2/tools/gotop/navigate_batch.py /tmp/waypoints.yaml \
-      --labels kitchen,door1,lab_corner --rounds 3
+# by group (yaml has a groups: section)
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
+    --labels @kitchen_zone --rounds 3
 
-  # by group (yaml has a groups: section):
-  python3 /g1_3d_nav_ros2/tools/gotop/navigate_batch.py /tmp/waypoints.yaml \
-      --labels @kitchen_zone --rounds 3
-
-  # mix labels and groups (auto-deduped):
-  python3 /g1_3d_nav_ros2/tools/gotop/navigate_batch.py /tmp/waypoints.yaml \
-      --labels @kitchen_zone,@lab,door1 --rounds 3 --shuffle
-'
+# mix labels and groups (auto-deduped)
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
+    --labels @kitchen_zone,@lab,door1 --rounds 3 --shuffle
 ```
 
-The script writes a markdown report at `/tmp/batch_report.md` with:
+The wrapper points the script at default yaml
+`/g1_3d_nav_ros2/data/waypoints.yaml` and writes the report to
+`/g1_3d_nav_ros2/data/batch_report.md` (each run overwrites — copy
+to a dated name if you want to keep history).
+
+The script writes a markdown report at `/g1_3d_nav_ros2/data/batch_report.md` with:
 
 - one row per segment: round, label, goal pose, reached pose,
   xy_err, yaw_err, duration, nav2 status, sanity
