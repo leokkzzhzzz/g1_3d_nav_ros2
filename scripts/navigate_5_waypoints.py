@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Drive G1 through a list of waypoints via NavigateToPose, R rounds.
+
+For each round, sequentially sends each waypoint as a NavigateToPose goal,
+waits for the action result, then samples map->body TF for 1 s to compute
+the achieved pose. Per-segment metrics (success / xy_err / yaw_err /
+duration / physical sanity) are written into a Markdown table at the end.
+
+Usage:
+    docker exec -it 3d_nav_ros2 bash -lc "
+      source /opt/ros/humble/setup.bash
+      source /botbrain_ws/install/setup.bash
+      python3 /tmp/navigate_5_waypoints.py /tmp/waypoints.yaml \\
+          --rounds 3 --output /tmp/walk_5wp_report.md
+    "
+
+Requires the full Nav2 + g1_write_node stack (nav2_launch.sh) and an
+operator on site to satisfy D-011 safety preconditions and answer the
+'physical_sanity' prompt after each segment.
+
+NavigateToPose is used in series rather than FollowWaypoints because
+FollowWaypoints does not stop between waypoints, which prevents per-segment
+TF measurement.
+"""
+import argparse
+import math
+import sys
+import time
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+import rclpy
+from rclpy.action import ActionClient
+from rclpy.node import Node
+from rclpy.duration import Duration
+from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import PoseStamped
+from nav2_msgs.action import NavigateToPose
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
+import yaml
+
+
+SAMPLE_HZ = 30
+SAMPLE_DURATION_S = 1.0
+SOURCE_FRAME = "map"
+TARGET_FRAME = "body"
+GOAL_TIMEOUT_S = 60.0
+
+
+def quat_to_yaw(qx, qy, qz, qw):
+    return math.atan2(2.0 * (qw * qz + qx * qy),
+                      1.0 - 2.0 * (qy * qy + qz * qz))
+
+
+def yaw_diff(a, b):
+    d = a - b
+    while d > math.pi:
+        d -= 2 * math.pi
+    while d < -math.pi:
+        d += 2 * math.pi
+    return d
+
+
+@dataclass
+class SegmentResult:
+    round_idx: int
+    wp_name: str
+    goal_x: float
+    goal_y: float
+    goal_yaw: float
+    success: bool
+    nav2_status: str
+    reached_x: Optional[float]
+    reached_y: Optional[float]
+    reached_yaw: Optional[float]
+    xy_err: Optional[float]
+    yaw_err_deg: Optional[float]
+    duration_s: float
+    physical_sanity: str
+
+
+def sample_pose(node, buf):
+    samples = []
+    end = time.time() + SAMPLE_DURATION_S
+    period = 1.0 / SAMPLE_HZ
+    while time.time() < end:
+        rclpy.spin_once(node, timeout_sec=period)
+        try:
+            t = buf.lookup_transform(SOURCE_FRAME, TARGET_FRAME,
+                                     rclpy.time.Time())
+            samples.append(t.transform)
+        except Exception:
+            pass
+        time.sleep(period)
+    if not samples:
+        return None
+    n = len(samples)
+    x = sum(s.translation.x for s in samples) / n
+    y = sum(s.translation.y for s in samples) / n
+    qx = sum(s.rotation.x for s in samples) / n
+    qy = sum(s.rotation.y for s in samples) / n
+    qz = sum(s.rotation.z for s in samples) / n
+    qw = sum(s.rotation.w for s in samples) / n
+    return x, y, quat_to_yaw(qx, qy, qz, qw)
+
+
+def make_pose_stamped(node, wp):
+    p = PoseStamped()
+    p.header.frame_id = SOURCE_FRAME
+    p.header.stamp = node.get_clock().now().to_msg()
+    p.pose.position.x = float(wp["x"])
+    p.pose.position.y = float(wp["y"])
+    p.pose.position.z = 0.0
+    p.pose.orientation.x = float(wp["qx"])
+    p.pose.orientation.y = float(wp["qy"])
+    p.pose.orientation.z = float(wp["qz"])
+    p.pose.orientation.w = float(wp["qw"])
+    return p
+
+
+def status_str(s):
+    return {
+        GoalStatus.STATUS_SUCCEEDED: "SUCCEEDED",
+        GoalStatus.STATUS_ABORTED: "ABORTED",
+        GoalStatus.STATUS_CANCELED: "CANCELED",
+    }.get(s, f"STATUS_{s}")
+
+
+def send_one(node, action_client, pose):
+    goal = NavigateToPose.Goal()
+    goal.pose = pose
+    if not action_client.wait_for_server(timeout_sec=10.0):
+        return False, "no_server", 0.0
+    t0 = time.time()
+    fut = action_client.send_goal_async(goal)
+    rclpy.spin_until_future_complete(node, fut, timeout_sec=10.0)
+    handle = fut.result()
+    if not handle or not handle.accepted:
+        return False, "rejected", time.time() - t0
+    res_fut = handle.get_result_async()
+    deadline = time.time() + GOAL_TIMEOUT_S
+    while time.time() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.5)
+        if res_fut.done():
+            break
+    if not res_fut.done():
+        handle.cancel_goal_async()
+        return False, "timeout", time.time() - t0
+    res = res_fut.result()
+    return (res.status == GoalStatus.STATUS_SUCCEEDED,
+            status_str(res.status), time.time() - t0)
+
+
+def write_report(results: List[SegmentResult], path):
+    lines = [
+        "# Walk 5-waypoint accuracy report",
+        "",
+        "| Round | WP | Goal (x,y,yaw°) | Reached (x,y,yaw°) | xy_err (m) | yaw_err (°) | duration (s) | nav2 | sanity |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for r in results:
+        goal = f"({r.goal_x:.2f},{r.goal_y:.2f},{math.degrees(r.goal_yaw):.0f})"
+        if r.reached_x is None:
+            reached = "—"; xy = "—"; yaw = "—"
+        else:
+            reached = f"({r.reached_x:.2f},{r.reached_y:.2f},{math.degrees(r.reached_yaw):.0f})"
+            xy = f"{r.xy_err:.3f}"
+            yaw = f"{r.yaw_err_deg:.1f}"
+        lines.append(f"| {r.round_idx} | {r.wp_name} | {goal} | {reached} | "
+                     f"{xy} | {yaw} | {r.duration_s:.1f} | {r.nav2_status} | {r.physical_sanity} |")
+    lines.append("")
+    lines.append("## Per-waypoint summary (across rounds)")
+    lines.append("")
+    lines.append("| WP | success_rate | mean xy_err (m) | std xy_err | mean yaw_err (°) | std yaw_err |")
+    lines.append("|---|---|---|---|---|---|")
+    by_wp = {}
+    for r in results:
+        by_wp.setdefault(r.wp_name, []).append(r)
+    for name in sorted(by_wp):
+        rs = by_wp[name]
+        succ = sum(1 for x in rs if x.success)
+        xy = [x.xy_err for x in rs if x.xy_err is not None]
+        yaw = [x.yaw_err_deg for x in rs if x.yaw_err_deg is not None]
+        m_xy = sum(xy) / len(xy) if xy else float("nan")
+        s_xy = (sum((v - m_xy) ** 2 for v in xy) / len(xy)) ** 0.5 if xy else float("nan")
+        m_yaw = sum(yaw) / len(yaw) if yaw else float("nan")
+        s_yaw = (sum((v - m_yaw) ** 2 for v in yaw) / len(yaw)) ** 0.5 if yaw else float("nan")
+        lines.append(f"| {name} | {succ}/{len(rs)} | {m_xy:.3f} | {s_xy:.3f} | "
+                     f"{m_yaw:.1f} | {s_yaw:.1f} |")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("waypoints", help="yaml from capture_waypoints.py")
+    ap.add_argument("--rounds", type=int, default=3)
+    ap.add_argument("--output", default="/tmp/walk_5wp_report.md")
+    args = ap.parse_args()
+
+    with open(args.waypoints) as f:
+        data = yaml.safe_load(f)
+    wps = data["waypoints"]
+    print(f"Loaded {len(wps)} waypoints from {args.waypoints}")
+    print(f"Will run {args.rounds} rounds, {len(wps) * args.rounds} segments total.\n")
+
+    rclpy.init()
+    node = Node("walk_5wp")
+    buf = Buffer()
+    TransformListener(buf, node)
+    ac = ActionClient(node, NavigateToPose, "navigate_to_pose")
+
+    results: List[SegmentResult] = []
+    for round_idx in range(1, args.rounds + 1):
+        print(f"\n=== Round {round_idx}/{args.rounds} ===")
+        for wp in wps:
+            print(f"\n  -> {wp['name']} (x={wp['x']:.2f} y={wp['y']:.2f} "
+                  f"yaw={math.degrees(wp['yaw']):.0f}deg)")
+            pose = make_pose_stamped(node, wp)
+            success, status, dur = send_one(node, ac, pose)
+            print(f"     nav2: {status} ({dur:.1f}s)")
+
+            reached = sample_pose(node, buf) if success else None
+            if reached:
+                rx, ry, ryaw = reached
+                xy_err = math.hypot(rx - wp["x"], ry - wp["y"])
+                yaw_err_deg = math.degrees(yaw_diff(ryaw, wp["yaw"]))
+                print(f"     reached: ({rx:.3f}, {ry:.3f}, {math.degrees(ryaw):.1f}deg)"
+                      f"  xy_err={xy_err:.3f}m  yaw_err={yaw_err_deg:.1f}deg")
+            else:
+                rx = ry = ryaw = None
+                xy_err = yaw_err_deg = None
+
+            sanity = input("     physical_sanity (y/n/skip): ").strip().lower() or "skip"
+            results.append(SegmentResult(
+                round_idx=round_idx, wp_name=wp["name"],
+                goal_x=wp["x"], goal_y=wp["y"], goal_yaw=wp["yaw"],
+                success=success, nav2_status=status,
+                reached_x=rx, reached_y=ry, reached_yaw=ryaw,
+                xy_err=xy_err, yaw_err_deg=yaw_err_deg,
+                duration_s=dur, physical_sanity=sanity,
+            ))
+
+    write_report(results, args.output)
+    print(f"\nReport written: {args.output}")
+    node.destroy_node()
+    rclpy.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
