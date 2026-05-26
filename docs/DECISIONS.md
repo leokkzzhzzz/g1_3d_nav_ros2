@@ -186,10 +186,10 @@ maintainers.
 
 ## D-010: Software-only PoC for Nav2 — `g1_write_node` deliberately disabled
 
-**Status:** accepted (2026-05-25)
+**Status:** superseded by D-011 (2026-05-26)
 **Context:** The full chain produces `/cmd_vel_out` from twist_mux (NOT /cmd_vel — see test report 2026-05-25); in production
 `g1_write_node` consumes it and calls `LocoClient::SetVelocity` on the
-Unitree SDK. That node currently crashes during `ChannelFactory::Init(0)`
+Unitree SDK. That node was thought to crash during `ChannelFactory::Init(0)`
 with `free(): invalid pointer` — see `Known Issues` in README.
 
 **Decision:** For the merged-container Nav2 PoC, `nav2_launch.sh` does NOT
@@ -200,3 +200,110 @@ path rendering, not by walking. G1 stays still.
 **Consequences:** The SDK init crash isn't on the critical path for this
 milestone. When it's fixed, add a `[3/3] g1_write_node` step to
 `nav2_launch.sh` (and possibly a safety brake / e-stop wrapper around it).
+
+**2026-05-26 supersession note:** The "SDK init crash" turned out to be a
+diagnostic artifact (a `timeout 8` wrapper sending `SIGTERM` mid-init). On
+clean runs `g1_write_node` reaches `active [3]` and a `vx=0.5` Twist on
+`/cmd_vel_out` makes G1 step. D-011 takes over — motion is enabled by
+default and botbrain's `nav2_params.yaml` is treated as upstream-authoritative.
+
+## D-011: `g1_write_node` is part of `nav2_launch.sh`; botbrain default `nav2_params.yaml` is authoritative
+
+**Status:** accepted (2026-05-26, this is v3 — see "history" at the bottom
+for the trajectory of revisions on the same day)
+**Context:** R-003 closure (Roadmap, 2026-05-26) verified that
+`g1_write_node` reaches `active [3]` cleanly and that publishing
+`Twist{linear.x = 0.5}` to `/cmd_vel_out` produces visible motion.
+However, that test was a single-Twist `ros2 topic pub --once` ping, which
+characterises the **single-step SDK Move dead-zone** — what
+velocity must one Move() call request before the SDK triggers a step.
+That is **not** the same number as the closed-loop dead-zone Nav2
+operates against, where `controller_server` publishes at 20 Hz and the
+SDK can integrate the stream into a continuous gait.
+
+The single-step result (`vx=0.05` no motion, `vx=0.5` motion) is a fact
+about the SDK API surface. It is not a fact about whether
+botbrain's default `nav2_params.yaml` (MPPI, `vx_max=0.35`,
+`min_x_velocity_threshold=0.001`) drives this G1 — that is determined by
+the closed-loop behaviour, which we have not yet measured.
+
+**Safety review.** A previous draft of this ADR introduced an
+`ENABLE_MOTION=1` opt-in flag in `nav2_launch.sh` to gate motion behind
+operator consent. Reading `g1_write.cpp` and `bot_bringup/twist_mux.yaml`
+showed botbrain already provides multiple safety layers:
+- L1 (SDK): `LocoClient::SetTimeout(2.0f)`; G1 FSM rejects Move when not
+  in sport mode.
+- L2 (mux): twist_mux input timeouts (0.1–0.5 s) drop stale sources;
+  `dead_man_switch` lock is wired but unpublished (Roadmap R-005 — the
+  one missing piece).
+- L3 (node): `/emergency_stop` service in `g1_write` toggles
+  `emergency_flag_`, which causes `cmd_vel_subscription_callback` to drop
+  Twists and triggers `stop_move()` + squat. **Already available.**
+- L3 (node): `/mode` service for explicit FSM control.
+- L5 (hw): RC controller L2+B is always available, independent of ROS.
+
+For test and operator-supervised use, L3 + L5 are sufficient. The
+`ENABLE_MOTION` flag adds maintenance burden without filling a real gap.
+R-005's `dead_man_switch` (fail-deadly) is the only missing layer, and it
+matters for **production deploy** (operator may be remote or absent), not
+for supervised testing.
+
+<!-- D-011 continues -->
+**Considered alternatives:**
+1. **Override botbrain's `nav2_params.yaml`** to raise the controller's
+   effective output floor above the single-step dead-zone (e.g.
+   `min_x_velocity_threshold: 0.5` and `FollowPath.vx_max: 0.7`).
+   Rejected — conflates the single-step dead-zone with the closed-loop
+   regime, and pre-emptively patches around a gap we have not actually
+   observed. Botbrain's defaults were validated upstream on G1; if they
+   fail in our stack, the gap is more likely elsewhere (TF, lifecycle,
+   topic remaps, controller frequency, costmap, missing publishers) than
+   in the velocity numbers themselves.
+2. **Velocity dead-zone compensation in `g1_write` callback** — clamp
+   non-zero `|vx| < dead_zone` up to `dead_zone`. Same conflation as (1)
+   plus breaks SDK semantics; rejected.
+3. **Insert `nav2_velocity_smoother`** between `controller_server` and
+   `twist_mux` to scale Twists. Same conflation; adds a lifecycle node;
+   rejected.
+4. **Use botbrain defaults verbatim and let closed-loop behaviour speak
+   for itself.** Run e2e walk with the upstream config. If G1 doesn't
+   move, diagnose the gap in *our* stack — not the parameter values.
+
+**Decision:** Take option **(4)**. Do not modify `config/nav2_params.yaml`
+beyond what D-009 already covers (`static_layer.map_topic` and
+`obstacle_layer.cloud.topic` topic forks — those are real topology
+mismatches, not value tuning). `nav2_launch.sh` ships `g1_write_node` as
+`[3/3]`, default-on. R-001 fix (auto-activate `zero_vel_publisher`) is
+folded in as `[2.5/3]`. No `ENABLE_MOTION` flag. Operator safety
+preconditions are documented in `README.md`'s Quick start.
+
+**Consequences:**
+- The fork on `nav2_params.yaml` (D-009) stays exactly two stanzas. No
+  velocity-tuning entries.
+- `nav2_launch.sh` becomes the single all-in-one operator command — the
+  previous "PoC mode that doesn't move" is recoverable by skipping the
+  `[3/3]` step manually.
+- The `ENABLE_MOTION` flag mentioned in earlier drafts of this ADR is
+  **not implemented** and is not part of the design.
+- If e2e walk fails with botbrain defaults, the failure mode is
+  diagnostic input — the gap is in our stack vs. the upstream-validated
+  topology; the cure is to find and fix that gap, not to tune the
+  parameters.
+
+**Roadmap relationship:**
+- R-007 (single-step dead-zone sweep) is reframed as a *characterisation
+  task* — interesting for understanding the SDK API but not a Nav2
+  blocker.
+- R-005 (dead-man-switch) is unchanged: production-deploy blocker, not a
+  test blocker.
+- R-008 (destructor cyclone race) unchanged: shutdown anomaly, not a
+  motion-enablement blocker.
+
+**History:**
+- v1 (initial draft, 2026-05-26): "ENABLE_MOTION=1 flag, motion off by
+  default" — based on assumed-narrow safety surface.
+- v2 (intra-day, after safety review): dropped the flag, kept a 0.5
+  velocity-floor override on `nav2_params.yaml`.
+- v3 (this version, after closed-loop vs single-step distinction): dropped
+  the velocity-floor override too. Botbrain defaults verbatim.
+
