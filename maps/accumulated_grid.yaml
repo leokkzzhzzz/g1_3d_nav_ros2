@@ -1,4 +1,4 @@
-image: /root/maps/accumulated_grid.pgm
+image: /g1_3d_nav_ros2/maps/accumulated_grid.pgm
 resolution: 0.050000
 origin: [-21.080900, -7.649780, 0.000000]
 negate: 0

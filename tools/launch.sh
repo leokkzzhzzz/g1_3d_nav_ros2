@@ -9,7 +9,7 @@ if [ "${ENV:-auto}" = "auto" ]; then
     [ -f /.dockerenv ] && ENV=docker || ENV=native
 fi
 case $ENV in
-    docker) WS_LIVOX=/root/3d_nav_g1/livox_ws; WS_G1=/root/3d_nav_g1/g1_ws; MAPS=/root/maps ;;
+    docker) WS_LIVOX=/root/3d_nav_g1/livox_ws; WS_G1=/root/3d_nav_g1/g1_ws; MAPS=/g1_3d_nav_ros2/maps ;;
     native) WS_LIVOX=$HOME/livox_ws;          WS_G1=$HOME/g1_ws;      MAPS=$HOME/g1_3d_nav/maps ;;
 esac
 

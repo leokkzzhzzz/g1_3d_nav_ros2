@@ -20,10 +20,10 @@ def generate_launch_description():
     )
 
     # G1: PCD map path is parameterised. Default points at the FAST-LIO mapping
-    # output baked into /root/maps/scans.pcd. Override with map_file:=...
+    # output baked into /g1_3d_nav_ros2/maps/scans.pcd. Override with map_file:=...
     map_file_arg = DeclareLaunchArgument(
         'map_file',
-        default_value='/root/maps/scans.pcd',
+        default_value='/g1_3d_nav_ros2/maps/scans.pcd',
         description='Path to PCD map file for ICP localization'
     )
     map_file = LaunchConfiguration('map_file')

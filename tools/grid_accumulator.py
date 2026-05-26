@@ -24,7 +24,7 @@ data has been accumulated):
         -t /accumulated_grid -f /tmp/accumulated_grid
 
 Defaults match the ROS1 ground_cloud_accumulator parameters used in the
-2026-05-21 mapping run (the one that produced /root/maps/accumulated_grid.*).
+2026-05-21 mapping run (the one that produced /g1_3d_nav_ros2/maps/accumulated_grid.*).
 """
 import argparse
 import math

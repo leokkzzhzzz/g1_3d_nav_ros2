@@ -32,7 +32,7 @@ with `RPly: Unable to open file`, and the C++ node aborts on the next
 `create_publisher()` call due to invalid rcl context.
 
 **Decision:** Replace the hardcoded path with
-`DeclareLaunchArgument('map_file', default_value='/root/maps/scans.pcd')`. The
+`DeclareLaunchArgument('map_file', default_value='/g1_3d_nav_ros2/maps/scans.pcd')`. The
 default points at the bind-mounted host directory so swapping maps is a
 container-restart-free operation.
 

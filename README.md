@@ -32,7 +32,7 @@ G1 (192.168.100.30)                         Leo (192.168.100.13)
 ┌─ 3d_nav_ros2 container ──────────────┐    ┌─ host install ─┐
 │ image: g1_nav_final:latest           │    │ rmw_zenoh_cpp  │
 │ net=host, ipc=host                   │    │ rviz2          │
-│ /root/maps -> /home/unitree/.../maps │    └────────────────┘
+│ /g1_3d_nav_ros2/maps -> /home/unitree/.../maps │    └────────────────┘
 │                                      │            │
 │ [1/6] rmw_zenohd          :7448 ◄────┼──tcp/7448──┘ (RMW=rmw_zenoh_cpp client)
 │ [2/6] livox_ros_driver2              │
@@ -58,13 +58,13 @@ router across the network. No DDS bridge, no ros1_bridge.
    docker pull us-central1-docker.pkg.dev/dreamcontroltrain/g1-nav/3d_nav_g1:latest
    docker tag  us-central1-docker.pkg.dev/dreamcontroltrain/g1-nav/3d_nav_g1:latest g1_nav_final:latest
    ```
-2. Place `scans.pcd` at `/home/unitree/g1_3d_nav/maps/scans.pcd` (see
+2. Place `scans.pcd` at `/home/unitree/g1_3d_nav_ros2_repo/maps/scans.pcd` (see
    `maps/README.md` for how to obtain).
 3. Create the runtime container if it does not exist:
    ```bash
    docker run -d --name 3d_nav_ros2 \
        --network host --ipc host \
-       -v /home/unitree/g1_3d_nav/maps:/root/maps \
+       -v /home/unitree/g1_3d_nav_ros2_repo/maps:/g1_3d_nav_ros2/maps \
        g1_nav_final:latest sleep infinity
    ```
 
