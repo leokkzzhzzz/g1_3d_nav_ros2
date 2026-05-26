@@ -145,16 +145,38 @@ all four before sending a goal:
 2. ≥ 1 m clearance around G1; not on a ledge.
 3. RC controller in hand; **L2 + B is the hardware brake** (independent
    of the ROS stack).
-4. The in-stack fail-passive brake is callable:
-   ```bash
-   ros2 service call /emergency_stop std_srvs/srv/SetBool "{}"
-   ```
-   First call → emergency ON (G1 stops + squats); second call → OFF.
-   The `request.data` field is ignored — `/emergency_stop` is a toggle.
+4. At least one in-stack brake reachable. Two are provided.
 
 For unattended / production deploy, the dead-man-switch (Roadmap R-005)
 is required. For supervised testing, the four preconditions above are
 sufficient.
+
+### Two in-stack brakes — pick by intent
+
+| Tool | Behaviour | When to use |
+|---|---|---|
+| `scripts/soft_stop.sh` | Cancels all `/navigate_to_pose` goals → twist_mux fallback to `cmd_vel_zero` (priority 1) → G1 stops **standing in sport mode** | Routine "stop the test". G1 immediately ready to accept a new goal. |
+| `scripts/estop.sh` | Calls `/emergency_stop` service → `emergency_flag_` set, SDK `stop_move()`, then `BALANCE_SQUAT_SQUAT_STAND` → G1 **stops + squats**. Toggle: second call clears `emergency_flag_` and G1 stands back up. | Real emergency. Fail-passive: even if balance fails mid-stop, G1 lands in a low stable posture. |
+
+Both wrappers are designed to be `docker cp`'d into the container under
+`/tmp/`, so the operator-side invocation is single-line:
+
+```bash
+docker exec -it 3d_nav_ros2 /tmp/soft_stop.sh   # routine
+docker exec -it 3d_nav_ros2 /tmp/estop.sh       # emergency (squats)
+```
+
+The wrappers self-source ROS env and `RMW_IMPLEMENTATION=rmw_zenoh_cpp`
+so they work regardless of the caller shell.
+
+Quick sync into a freshly-started container (Leo side):
+
+```bash
+gh api repos/leokkzzhzzz/g1_3d_nav_ros2/contents/scripts/soft_stop.sh --jq .content | base64 -d > /tmp/soft_stop.sh
+gh api repos/leokkzzhzzz/g1_3d_nav_ros2/contents/scripts/estop.sh     --jq .content | base64 -d > /tmp/estop.sh
+scp /tmp/soft_stop.sh /tmp/estop.sh unitree@192.168.100.30:/tmp/
+ssh unitree@192.168.100.30 'docker cp /tmp/soft_stop.sh 3d_nav_ros2:/tmp/ && docker cp /tmp/estop.sh 3d_nav_ros2:/tmp/ && docker exec 3d_nav_ros2 chmod +x /tmp/soft_stop.sh /tmp/estop.sh'
+```
 
 ### Troubleshooting — `base_footprint frame does not exist` after restart
 
