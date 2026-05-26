@@ -307,3 +307,18 @@ preconditions are documented in `README.md`'s Quick start.
 - v3 (this version, after closed-loop vs single-step distinction): dropped
   the velocity-floor override too. Botbrain defaults verbatim.
 
+**Verified (2026-05-26 evening):** End-to-end goal-driven walk passes on
+G1 with this configuration. RViz2 `2D Goal Pose` → `bt_navigator: Goal
+succeeded` inside `xy_goal_tolerance: 0.10`. The closed-loop dead-zone
+prediction held — botbrain default `vx_max: 0.35` /
+`min_x_velocity_threshold: 0.001` drive G1 fine, despite the single-step
+SDK Move dead-zone observed in R-003 closure being above 0.05. See
+`docs/TEST_REPORTS/2026-05-26-walk-e2e.md`. The only D-011-relevant
+patch beyond D-009's two topic forks turned out to be a frame-name
+mismatch (`base_footprint` → `body`) — same character as the topic
+forks (real topology mismatch with this G1 stack, not value tuning).
+One new caveat split off as Roadmap R-009: the bind-mount overlay of
+the fork yaml does not always reach long-lived nav2 processes across
+`nav2_launch.sh` restarts; `docker stop && start` is the working
+workaround.
+

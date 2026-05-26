@@ -151,7 +151,72 @@ runtime failure.
 
 **Effort:** ~1–2 hours; low priority because it doesn't affect operation.
 
+---
+
+### R-009 — `nav2_params.yaml` mount overlay stale across `nav2_launch.sh` restarts
+**Symptom:** On the first 1–2 `nav2_launch.sh` runs after a long-running
+container, `/tmp/nav2.log` floods with
+`Invalid frame ID "base_footprint" passed to canTransform — frame does
+not exist` at 2 Hz. The D-009 fork sets `robot_base_frame: body` (4
+places), single-file bind-mounted over
+`/botbrain_ws/install/g1_pkg/share/g1_pkg/config/nav2_params.yaml`. The
+running nav2 processes behave as if they read the upstream
+`base_footprint` value despite the mount.
+
+**What we verified during 2026-05-26 e2e** (see
+`docs/TEST_REPORTS/2026-05-26-walk-e2e.md`):
+- Host file content correct (`grep robot_base_frame` → `body` in all 4
+  occurrences).
+- `docker inspect` mount table correct.
+- `docker exec ... cat` of mount target shows fork content.
+- `ros2 pkg prefix g1_pkg` resolves to the mount-target prefix.
+- `nav2.launch.py` resolves yaml via `get_package_share_directory`.
+- `ReplaceString` substitutions don't touch `body`.
+
+Yet `controller_server`'s effective `local_costmap.robot_base_frame`
+behaves as `base_footprint`.
+
+**Workaround that works:** `docker stop 3d_nav_ros2 && docker start
+3d_nav_ros2` followed by a fresh `launch.sh + nav2_launch.sh`. After
+this, `grep -c base_footprint /tmp/nav2.log` → 0 and the closed loop
+works first try.
+
+**Hypotheses to dig into:**
+- Docker bind-mount overlay propagation timing across container exec
+  contexts (long-lived `docker exec -it ... bash` sessions may have
+  cached fd inodes from before the mount fully took effect).
+- `nav2_launch.sh` re-runs reuse some yaml cache (RewrittenYaml temp
+  file, ParameterFile, ament index) that isn't invalidated when the
+  mount changes underneath.
+- rmw_zenoh_cpp 0.1.8 yaml param distribution caching.
+
+**Approach:**
+1. Reproduce intentionally — long-running container, multiple
+   `nav2_launch.sh` cycles, capture `controller_server` effective
+   `robot_base_frame` via `ros2 param get` from a Leo-side ros2 cli
+   (the in-container cli is unreliable per R-002).
+2. Bisect: stop nav2 only (no container restart), confirm reproduces;
+   then restart container, confirm fixes.
+3. If consistent, add a sanity check at the start of `nav2_launch.sh`
+   that fails fast when the running stack would read the wrong yaml.
+
+**Effort:** ~half day; the workaround is cheap so this is not blocking.
+
 ## Done
+
+### 2026-05-26 — End-to-end Nav2 walk verified (D-011 v3 implemented)
+First closed-loop goal-to-walk validated on G1 via RViz2 `2D Goal Pose`.
+`controller_server` (MPPI) drives `/cmd_vel_nav` → `twist_mux` →
+`/cmd_vel_out` → `g1_write_node` → SDK `LocoClient::Move()` → physical
+G1 walk → `bt_navigator: Goal succeeded` within `xy_goal_tolerance:
+0.10`. Botbrain default `nav2_params.yaml` (other than the D-009 topic
+forks and the `robot_base_frame: body` rename) used verbatim. D-011 v3
+"do not pre-emptively tune Nav2 velocity numbers" stance validated —
+single-step SDK Move dead-zone (R-007) does not apply to the closed-loop
+20 Hz Twist stream. Test report at
+`docs/TEST_REPORTS/2026-05-26-walk-e2e.md`. New finding split off as
+**R-009** (yaml mount overlay sometimes stale across `nav2_launch.sh`
+restarts; `docker stop && start` workaround documented).
 
 ### 2026-05-26 — R-003 closed: G1 walks under `g1_write_node` (motion verified)
 **Errata for the original R-003 description:** the symptom was *not*
