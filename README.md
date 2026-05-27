@@ -47,6 +47,54 @@ All nodes share `RMW_IMPLEMENTATION=rmw_zenoh_cpp` and connect to the
 in-container Zenoh router on `tcp/127.0.0.1:7448`. Leo connects to the same
 router across the network. No DDS bridge, no ros1_bridge.
 
+## Network host management
+
+Throughout this README, in `tools/launch.sh`, and in side READMEs (`maps/`,
+`data/`, `botbrain/`), the G1 robot's IP appears as the literal string
+`192.168.100.30` — roughly 22 occurrences in operator-facing commands.
+The literal is intentional: copy-paste readiness beats template variables
+when an operator is debugging on G1 directly. The cost is that when the
+team moves to a new debugging site and the G1 IP changes, all 22 places
+have to change together.
+
+Single source of truth: **`configs/g1_host.txt`** — one line, the current
+G1 IP. **No runtime process reads this file.** Cross-host Zenoh discovery
+is still configured at run time via `ZENOH_CONFIG_OVERRIDE` on the
+operator's shell (see [Per-run startup](#per-run-startup) below). The
+host file exists only so `tools/rename_host.sh` knows what to replace
+with what, and so any reader can answer "what's the current G1 IP?" with
+a single `cat configs/g1_host.txt`.
+
+### Renaming the G1 host
+
+```bash
+bash tools/rename_host.sh <NEW_IP>          # rewrite all references
+git diff                                    # review the changes
+git commit -am "rename G1 host: <OLD> -> <NEW>"
+```
+
+For a preview without writing anything:
+
+```bash
+bash tools/rename_host.sh --dry-run <NEW_IP>
+```
+
+The script reads the current ("old") IP from `configs/g1_host.txt`,
+rewrites every git-tracked occurrence, then writes the new IP back to the
+host file as the last step.
+
+### What the script excludes
+
+| Excluded | Why |
+|---|---|
+| `docs/TEST_REPORTS/**` | Historical evidence — these reports record runs at past sites. The IP belongs to the evidence, not the configuration. |
+| `README.md` `> Status:` line | Same — the line asserts "verified end-to-end on G1 (192.168.100.30)" on a specific date and SHA. |
+| `configs/g1_host.txt` itself | Rewritten as the last step. |
+
+If `tools/rename_host.sh` aborts with *"old IP appears nowhere else in
+the tree"*, the source of truth is out of sync with the repo (something
+edited one side without the other). Investigate before forcing a rewrite.
+
 ## Quickstart
 
 ### Prerequisites (one-off)
