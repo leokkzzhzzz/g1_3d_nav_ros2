@@ -226,51 +226,69 @@ one-step rollback.
   bash tools/recreate_3d_nav_ros2.sh
   ```
 - The repo is bind-mounted into the container at `/g1_3d_nav_ros2/`,
-  so the mapping wrappers (`tools/mapping/mapping_record.sh`,
+  so the mapping wrappers (`tools/mapping/mapping_launch.sh`,
   `tools/mapping/mapping_save.sh`, `tools/mapping/grid_accumulator.py`)
   are immediately available inside the container after `git pull`. No
   `docker cp` step.
 
-### Step 1 — bring up the localization stack
+### Why a separate `mapping_launch.sh`
 
-`fast_lio` runs in mapping mode by default; it accumulates the 3D PCD as
-it goes, and dumps it on `/map_save` service call.
+The day-to-day stack starter `tools/launch.sh` (used for navigation)
+runs **6** components — `fast_lio` plus `open3d_loc`, `map_server`
+and `pointcloud_to_laserscan`. Those last three load and consume the
+*existing* `scans.pcd` / `accumulated_grid.pgm`. While that's fine
+for navigation, it's actively harmful while you're trying to *build*
+new maps:
+
+- `open3d_loc` would ICP-match against the old `scans.pcd` you're
+  about to replace — its fitness drops to 0 the moment G1 walks
+  past the old map's coverage, and the resulting drift contaminates
+  fast_lio's odometry
+- `map_server` would publish the stale `accumulated_grid.pgm` on
+  `/map_2d` — anything subscribed to it sees the old environment
+- `pointcloud_to_laserscan` is for nav2's local costmap — not part
+  of the mapping pipeline
+
+`tools/mapping/mapping_launch.sh` runs only what mapping actually
+needs:
+
+```
+[1/4] rmw_zenohd          ← Zenoh router (must be first)
+[2/4] LiDAR Driver        ← Livox MID360
+[3/4] FAST-LIO            ← mapping mode, /map_save service
+[4/4] grid_accumulator    ← 2D OccupancyGrid on /accumulated_grid
+```
+
+Equivalent to ROS1's three-terminal mapping flow
+(`livox_ros_driver2` + `fast_lio mapping_g1_full` +
+`ground_cloud_accumulator`), all-in-one ROS2.
+
+### Step 1 — bring up the mapping stack
 
 ```bash
 # window A — hold this session open the whole time
 ssh unitree@192.168.100.30
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_launch.sh
 ```
 
-Wait for `=== ALL 6 NODES RUNNING ===`. Then wait another ~10 seconds
-for `IMU Initial Done` to appear in `/tmp/fastlio.log` — during this
-window G1 must be standing still (sport mode, no walking yet).
+Wait for `=== MAPPING STACK READY (4 nodes, mapping mode) ===`. Then
+wait another ~10 seconds for `IMU Initial Done` to appear in
+`/tmp/fastlio.log` — during this window G1 must be standing still
+(sport mode, no walking yet).
 
 **Pick the spot where G1 is standing right now** as your map origin.
-The 2D grid's origin and the 3D PCD's frame zero will both be tied to
-this physical position, so make sure it's somewhere you can return to
-later if you ever need to align an old map with a new mapping run.
-Floor tape works.
+The 2D grid's origin and the 3D PCD's frame zero will both be tied
+to this physical position. Floor tape it so you can come back later
+if needed.
 
-### Step 2 — start the 2D grid accumulator
+To watch grid accumulation in real time, in another terminal:
 
 ```bash
-# window B
-ssh unitree@192.168.100.30
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_record.sh
+docker exec 3d_nav_ros2 tail -f /tmp/grid.log
+# every 5 seconds: frames=N ground=N obs=N grid=WxH
 ```
 
-You should see:
-
-```
-grid_accumulator: res=0.05m, ground_z<0.15, obstacle_z>0.25, ...
-```
-
-and every 5 seconds a stats line: `frames=N ground=N obs=N grid=WxH`.
-
-This window blocks while G1 is being driven around — leave it open.
-
-### Step 3 — drive G1 around the workspace
+### Step 2 — drive G1 around the workspace
 
 Use the RC controller, sport mode, slow walk. **The single
 viewpoint of a stationary scan has blind spots — driving around is
@@ -291,10 +309,10 @@ Recommended motion pattern:
 When done, **drive G1 back to the floor-tape origin** (Step 1 spot).
 This makes the post-map-restart alignment trivial.
 
-### Step 4 — dump the maps
+### Step 3 — dump the maps
 
 ```bash
-# window C
+# window B
 ssh unitree@192.168.100.30
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_save.sh
 ```
@@ -317,28 +335,29 @@ DONE. New map files in /g1_3d_nav_ros2/maps/ :
   -rw-r--r-- 1 root root       154 ... accumulated_grid.yaml
 
 Next:
-  1. Ctrl+C window A's launch.sh
-  2. Re-run /g1_3d_nav_ros2/tools/launch.sh — open3d_loc loads new PCD on startup
+  1. Ctrl+C the mapping_launch.sh terminal
+  2. Start the navigation stack so open3d_loc loads the new PCD:
+       docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
   3. Verify ICP fitness >= 0.7
 ```
 
-If you don't see "DONE." or any step says FAIL, **don't restart the
-stack** — your old map is still in place and still working. See the
-troubleshooting block below.
+If you don't see "DONE." or any step says FAIL, **don't switch to
+the navigation stack yet** — your old map is still in place and
+still working. See the troubleshooting block below.
 
-### Step 5 — restart the stack with the new maps
+### Step 4 — switch to the navigation stack to load the new maps
 
 ```bash
-# window A
-# Ctrl+C the running launch.sh
+# window A — Ctrl+C the running mapping_launch.sh first, THEN:
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
 ```
 
-`open3d_loc` reads `scans.pcd` once at startup, so the restart is
-required for the new PCD to take effect. `map_server` reads
-`accumulated_grid.{pgm,yaml}` once at startup too.
+`open3d_loc` reads `scans.pcd` once at startup; `map_server` reads
+`accumulated_grid.{pgm,yaml}` once at startup too. The mapping stack
+doesn't load these — that's why the swap to `launch.sh` is required
+for the new maps to take effect.
 
-### Step 6 — verify ICP fitness ≥ 0.7
+### Step 5 — verify ICP fitness ≥ 0.7
 
 ```bash
 ssh unitree@192.168.100.30 \
@@ -363,7 +382,7 @@ block, do not start any waypoint test.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `mapping_save.sh` says "fast_lio did not produce a non-empty test.pcd" | `pcd_save_en: false` in mid360.yaml, or fast_lio has been running for <30 s | Check yaml; let it run longer before saving |
-| `mapping_save.sh` says "no map saver service" | `mapping_record.sh` is not running, or grid_accumulator hasn't published `/accumulated_grid` yet | Start `mapping_record.sh` in window B; let it accumulate at least one frame |
+| `mapping_save.sh` says "no map saver service" | `mapping_launch.sh` is not running, or grid_accumulator hasn't published `/accumulated_grid` yet | Start `mapping_launch.sh` in window A; let it run long enough that `/tmp/grid.log` shows `frames>0 grid=WxH` |
 | Fitness stays at 0.0 after restart | The PCD was dumped while G1 had drifted — fast_lio's odom != map origin | Re-run mapping starting from a fresh `docker stop && start`; G1 stays still until "IMU Initial Done"; finish back at the start position |
 | Fitness oscillates 0.3–0.6 | Workspace was scanned from too few viewpoints | Re-run mapping with more rotations + back-and-forth coverage |
 | New map breaks something but old map worked | Roll back: `cd /g1_3d_nav_ros2/maps/ && for f in scans.pcd accumulated_grid.pgm accumulated_grid.yaml; do mv "$f.bak" "$f"; done`, then restart launch.sh | — |

@@ -2,7 +2,7 @@
 # mapping_save.sh — dump 3D PCD + 2D PGM directly to /g1_3d_nav_ros2/maps/.
 #
 # This is the other half of the ROS2-native mapping toolchain. After
-# mapping_record.sh has run for long enough that grid_accumulator has
+# mapping_launch.sh has run for long enough that grid_accumulator has
 # accumulated the workspace, this wrapper:
 #
 #   1. Asks fast_lio (already running in mapping mode) to dump the 3D
@@ -18,8 +18,8 @@
 #      from the canonical mount location.
 #
 # Pre-conditions:
-#   - launch.sh + mapping_record.sh both running (fast_lio mapping
-#     active, grid_accumulator publishing /accumulated_grid)
+#   - mapping_launch.sh running (fast_lio mapping mode active,
+#     grid_accumulator publishing /accumulated_grid)
 #   - the operator has driven G1 around enough to cover the workspace
 #
 # After this script returns:
@@ -28,9 +28,10 @@
 #   - /g1_3d_nav_ros2/maps/accumulated_grid.yaml       ← new (image path fixed)
 #   - /g1_3d_nav_ros2/maps/*.bak                       ← previous map files
 #
-# To activate: Ctrl-C launch.sh in window A, restart it. open3d_loc
-# loads the new PCD; map_server loads the new PGM. Verify ICP fitness
-# >= 0.7 with: tail -30 /tmp/loc.log | grep fitness | tail -5
+# To activate: Ctrl-C mapping_launch.sh, then start the navigation
+# stack with launch.sh — open3d_loc loads the new PCD; map_server
+# loads the new PGM. Verify ICP fitness >= 0.7 with:
+#   tail -30 /tmp/loc.log | grep fitness | tail -5
 #
 # Usage:
 #   docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_save.sh
@@ -87,7 +88,8 @@ echo "DONE. New map files in $MAPS/ :"
 ls -la "$MAPS/scans.pcd" "$MAPS/accumulated_grid.pgm" "$MAPS/accumulated_grid.yaml" 2>&1 | sed 's|^| |'
 echo
 echo "Next:"
-echo "  1. Ctrl+C window A's launch.sh"
-echo "  2. Re-run /g1_3d_nav_ros2/tools/launch.sh — open3d_loc loads new PCD on startup"
+echo "  1. Ctrl+C the mapping_launch.sh terminal (stops the mapping stack)"
+echo "  2. Start the navigation stack so open3d_loc loads the new PCD:"
+echo "       docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh"
 echo "  3. Verify ICP fitness >= 0.7:"
 echo "       tail -30 /tmp/loc.log | grep fitness | tail -5"

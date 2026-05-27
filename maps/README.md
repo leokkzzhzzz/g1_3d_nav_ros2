@@ -40,7 +40,7 @@ produced from inside the `3d_nav_ros2` container:
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
 
 # window B — 2D grid accumulator
-docker exec -it 3d_nav_ros2 /tmp/mapping_record.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_launch.sh
 
 # RC-drive G1 around the workspace (5–15 minutes), covering each
 # future waypoint area from multiple viewpoints
