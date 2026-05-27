@@ -37,7 +37,7 @@ produced from inside the `3d_nav_ros2` container:
 ```bash
 # window A — localization stack (publishes /cloud_registered_body_1
 # and the map->body TF that grid_accumulator reads)
-docker exec -it 3d_nav_ros2 /root/launch.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
 
 # window B — 2D grid accumulator
 docker exec -it 3d_nav_ros2 /tmp/mapping_record.sh

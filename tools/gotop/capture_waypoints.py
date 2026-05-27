@@ -214,7 +214,7 @@ def main():
     if not wait_for_tf_stream(buf, TF_STREAM_WAIT_S):
         print(f"TIMEOUT after {TF_STREAM_WAIT_S:.0f}s")
         print("  -> launch.sh is not running, or fast_lio / open3d_loc didn't")
-        print("     start. Run /root/launch.sh and wait for ALL 6 NODES RUNNING.")
+        print("     start. Run /g1_3d_nav_ros2/tools/launch.sh and wait for ALL 6 NODES RUNNING.")
         executor.shutdown(); rclpy.shutdown(); return 1
     print("OK")
 

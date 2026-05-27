@@ -107,7 +107,7 @@ non-physical coordinates.
 
 Two ways:
 
-1. **Manually re-position G1** at a known origin and restart `bash /root/launch.sh`.
+1. **Manually re-position G1** at a known origin and restart `bash /g1_3d_nav_ros2/tools/launch.sh`.
 2. **Use RViz2 "2D Pose Estimate" tool** — publishes `/initialpose`, open3d_loc
    subscribes and re-seeds.
 
@@ -123,12 +123,12 @@ Pose` → planner → controller → twist_mux → `g1_write_node` → SDK
 ```bash
 # Window A — localization (holds session, Ctrl+C to stop)
 ssh unitree@192.168.100.30
-docker exec -it 3d_nav_ros2 /root/launch.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
 # wait for "=== ALL 6 NODES RUNNING ==="
 
 # Window B — Nav2 + twist_mux + g1_write_node (holds session)
 ssh unitree@192.168.100.30
-docker exec -it 3d_nav_ros2 /root/nav2_launch.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav2_launch.sh
 # wait for "=== STACK READY: G1 motion ENABLED ==="
 ```
 
@@ -239,7 +239,7 @@ it goes, and dumps it on `/map_save` service call.
 ```bash
 # window A — hold this session open the whole time
 ssh unitree@192.168.100.30
-docker exec -it 3d_nav_ros2 /root/launch.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
 ```
 
 Wait for `=== ALL 6 NODES RUNNING ===`. Then wait another ~10 seconds
@@ -318,7 +318,7 @@ DONE. New map files in /g1_3d_nav_ros2/maps/ :
 
 Next:
   1. Ctrl+C window A's launch.sh
-  2. Re-run /root/launch.sh — open3d_loc loads new PCD on startup
+  2. Re-run /g1_3d_nav_ros2/tools/launch.sh — open3d_loc loads new PCD on startup
   3. Verify ICP fitness >= 0.7
 ```
 
@@ -331,7 +331,7 @@ troubleshooting block below.
 ```bash
 # window A
 # Ctrl+C the running launch.sh
-docker exec -it 3d_nav_ros2 /root/launch.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
 ```
 
 `open3d_loc` reads `scans.pcd` once at startup, so the restart is

@@ -88,6 +88,6 @@ ls -la "$MAPS/scans.pcd" "$MAPS/accumulated_grid.pgm" "$MAPS/accumulated_grid.ya
 echo
 echo "Next:"
 echo "  1. Ctrl+C window A's launch.sh"
-echo "  2. Re-run /root/launch.sh — open3d_loc loads new PCD on startup"
+echo "  2. Re-run /g1_3d_nav_ros2/tools/launch.sh — open3d_loc loads new PCD on startup"
 echo "  3. Verify ICP fitness >= 0.7:"
 echo "       tail -30 /tmp/loc.log | grep fitness | tail -5"
