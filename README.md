@@ -317,6 +317,7 @@ Equivalent to ROS1's three-terminal mapping flow
 # window A — hold this session open the whole time
 ssh unitree@192.168.100.30
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_launch.sh
+bash /home/leo/g1_3d_nav_deploy/configs/mapping_rviz2.sh
 ```
 
 Wait for `=== MAPPING STACK READY (4 nodes, mapping mode) ===`. Then
