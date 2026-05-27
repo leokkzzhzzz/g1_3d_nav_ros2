@@ -9,3 +9,4 @@ log/
 *.tar
 *.tgz
 *.tar.gz
+robot_config.yaml

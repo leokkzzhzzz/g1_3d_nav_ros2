@@ -1,0 +1,20 @@
+# robot_config.yaml — runtime configuration for botbrain stack.
+#
+# Copy this file to botbrain/robot_config.yaml and fill in the
+# site-specific values. The real robot_config.yaml is gitignored
+# so secrets (wifi password, openai api key) never reach git.
+#
+# Required by tools/nav2_launch.sh sanity check.
+
+robot_configuration:
+  robot_name: ""
+  robot_model: "g1"
+  description_file_type: "xacro"
+  network_interface: "eth0"
+  tita_namespace: ""
+  openai_api_key: ""        # fill if using bot_rosa LLM features; leave blank otherwise
+  wifi_interface: "wlan0"
+  wifi_ssid: ""             # fill: WiFi SSID for the deployment site
+  wifi_password: ""         # fill: WiFi password
+  default_map: ""
+  default_static_map: ""    # fill: name of map yaml under g1_pkg/maps/, e.g. "office1.yaml"

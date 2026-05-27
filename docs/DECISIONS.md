@@ -146,7 +146,7 @@ peers under the same Zenoh router on `127.0.0.1:7448`.
 
 **Consequences:**
 - Image grew by ~250 MB (acceptable; one-off cost).
-- A new mount was needed: `g1_3d_nav_ros2/config/nav2_params.yaml` is bound
+- A new mount was needed: `g1_3d_nav_ros2/configs/nav2_params.yaml` is bound
   as a **single-file** read-only mount over
   `/botbrain_ws/install/g1_pkg/share/g1_pkg/config/nav2_params.yaml`. This
   keeps the override outside botbrain's writable workspace and applies the
@@ -156,7 +156,8 @@ peers under the same Zenoh router on `127.0.0.1:7448`.
 
 ## D-009: Nav2 topic overrides for the merged container
 
-**Status:** accepted (2026-05-25)
+**Status:** accepted (2026-05-25), mount mechanism superseded by in-src
+fork (2026-05-27 — see end of section).
 **Context:** Botbrain's `nav2_params.yaml` was authored against a robot whose
 sensor topology differs from this stack:
 - `static_layer` defaults to subscribing `/map`, but in our stack `/map`
@@ -171,7 +172,7 @@ sensor topology differs from this stack:
   (touches upstream code).
 - Fork the yaml inside our repo (this project's choice).
 
-**Decision:** Fork the yaml at `config/nav2_params.yaml`. Override:
+**Decision:** Fork the yaml at `configs/nav2_params.yaml`. Override:
 - `static_layer.map_topic: /map_2d`
 - `obstacle_layer.cloud.topic: /cloud_registered_body_1` (both costmaps)
 
@@ -183,6 +184,25 @@ stays untouched.
 manually re-fork. The diff to maintain is small (two stanzas), and the
 header comment in the yaml documents the fork rationale for future
 maintainers.
+
+**Supersession (2026-05-27):** When botbrain switched to in-repo vendor
++ container-side `colcon symlink-install` (botbrain mount source moved
+from host `~/botbrain_ws/` to `<repo>/botbrain/`), the single-file bind
+mount over the install path collided with `colcon symlink-install`'s
+attempt to symlink that same path back to src ("Device or resource busy").
+
+The fix folded the D-009 fork directly into
+`botbrain/src/g1_pkg/config/nav2_params.yaml`:
+- 4 × `robot_base_frame: <prefix>base_footprint` → `body`
+- `static_layer.map_topic: /map_2d` (added)
+- `obstacle_layer.cloud.topic: pointcloud` → `/cloud_registered_body_1`
+  (both costmaps)
+
+Runtime behavior is unchanged; the source of truth moved from a separate
+fork file (`configs/nav2_params.yaml`) plus a docker single-file mount
+to inline edits in the vendored src. The mount is removed from
+`tools/recreate_3d_nav_ros2.sh`. Upstream sync now means: pull botbrain
+upstream into `botbrain/src/`, re-apply the four edits in-place, commit.
 
 ## D-010: Software-only PoC for Nav2 — `g1_write_node` deliberately disabled
 
@@ -269,7 +289,7 @@ for supervised testing.
    for itself.** Run e2e walk with the upstream config. If G1 doesn't
    move, diagnose the gap in *our* stack — not the parameter values.
 
-**Decision:** Take option **(4)**. Do not modify `config/nav2_params.yaml`
+**Decision:** Take option **(4)**. Do not modify `configs/nav2_params.yaml`
 beyond what D-009 already covers (`static_layer.map_topic` and
 `obstacle_layer.cloud.topic` topic forks — those are real topology
 mismatches, not value tuning). `nav2_launch.sh` ships `g1_write_node` as

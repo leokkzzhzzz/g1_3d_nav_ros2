@@ -134,7 +134,7 @@
   ros__parameters:
     use_sim_time: false
     global_frame: <prefix>map
-    robot_base_frame: <prefix>base_footprint
+    robot_base_frame: body
     odom_topic: /<prefix>odom
     default_bt_xml_filename: "navigate_w_replanning_time.xml"
 
@@ -142,7 +142,7 @@
   global_costmap:
     ros__parameters:
       global_frame: <prefix>map
-      robot_base_frame: <prefix>base_footprint
+      robot_base_frame: body
       update_frequency: 5.0
       publish_frequency: 2.0
       rolling_window: false
@@ -155,16 +155,19 @@
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
-        map_subscribe_transient_local: true    
+        map_subscribe_transient_local: true
         subscribe_to_updates: true
-        footprint_clearing_enabled: true       
+        footprint_clearing_enabled: true
+        # g1_3d_nav_ros2: 2D occupancy grid is on /map_2d, not /map (which is open3d_loc PCD)
+        map_topic: /map_2d
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         observation_sources: cloud
         footprint_clearing_enabled: true
         cloud:
-          topic: pointcloud
+          # g1_3d_nav_ros2: FAST-LIO publishes body-frame cloud on this topic
+          topic: /cloud_registered_body_1
           data_type: "PointCloud2"
           marking: true
           clearing: true                  
@@ -184,7 +187,7 @@
   local_costmap:
     ros__parameters:
       global_frame: <prefix>odom
-      robot_base_frame: <prefix>base_footprint
+      robot_base_frame: body
       transform_tolerance: 1.0
       rolling_window: true
       width: 4
@@ -204,7 +207,8 @@
         observation_sources: cloud
         footprint_clearing_enabled: true
         cloud:
-          topic: pointcloud
+          # g1_3d_nav_ros2: FAST-LIO publishes body-frame cloud on this topic
+          topic: /cloud_registered_body_1
           data_type: "PointCloud2"
           marking: true
           clearing: true                  
@@ -245,7 +249,7 @@
       plugin: "nav2_behaviors/Wait"
     local_frame: <prefix>odom
     global_frame: <prefix>map
-    robot_base_frame: <prefix>base_footprint
+    robot_base_frame: body
     transform_tolerance: 1.0
     simulate_ahead_time: 2.0
     max_rotational_vel: 1.0
