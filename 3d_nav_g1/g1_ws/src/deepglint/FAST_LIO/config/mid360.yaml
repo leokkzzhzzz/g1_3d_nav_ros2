@@ -32,7 +32,7 @@
       b_gyr_cov: 0.0001
       fov_degree: 360.0
       det_range: 100.0
-      extrinsic_est_en: true  # 2026-05-25 matches ROS1 to prevent ESKF divergence # true: enable the online estimation of IMU-LiDAR extrinsic
+      extrinsic_est_en: false  # Match ROS1 mid360_g1.yaml; keep G1 MID360 fixed extrinsic
       extrinsic_T: [-0.011, -0.02329, 0.04412]
       extrinsic_R: [1., 0., 0., 0., 1., 0., 0., 0., 1.]
 
