@@ -1,7 +1,7 @@
 # g1_3d_nav_ros
 
 > Status: 2026-05-25 — verified end-to-end on G1 (xxx.xxx.xxx.xxx) with
-> cross-host RViz2 from Host (xxx.xxx.xxx.xxx). Image:
+> cross-host RViz2 from host (xxx.xxx.xxx.xxx). Image:
 
 ## What this repo holds
 
@@ -13,7 +13,7 @@
 - **`tools`** — tools for quick start mapping nav2 map_edit rviz2
 - **`maps/`** — 2D occupancy grid (3D PCD is build product, not in git — see
   `maps/README.md`)
-- **`configs/`** — Host-side RViz2 config 
+- **`configs/`** — host-side RViz2 config 
 
 ## Runtime topology
 
@@ -39,7 +39,7 @@ router across the network. No DDS bridge, no ros1_bridge.
 
 ## Network host management
 
-Throughout this README, in `tools/launch.sh`, and in side READMEs (`maps/`,
+Throughout this README, in `tools/nav/launch.sh`, and in side READMEs (`maps/`,
 `data/`, `botbrain/`), the G1 robot's IP appears as the literal string
 `xxx.xxx.xxx.xxx` — roughly 22 occurrences in operator-facing commands.
 The literal is intentional: copy-paste readiness beats template variables
@@ -145,7 +145,7 @@ non-physical coordinates.
 
 Two ways:
 
-1. **Manually re-position G1** at a known origin and restart `bash /g1_3d_nav_ros2/tools/launch.sh`.
+1. **Manually re-position G1** at a known origin and restart `bash /g1_3d_nav_ros2/tools/nav/launch.sh`.
 2. **Use RViz2 "2D Pose Estimate" tool** — publishes `/initialpose`, open3d_loc
    subscribes and re-seeds.
 
@@ -167,14 +167,14 @@ root or any other cwd:
 
 ```bash
 # from the cloned repo on your workstation
-bash tools/g1_nav_loc_rviz2.sh    # nav + localization view
-bash tools/mapping_rviz2.sh       # mapping view
+bash tools/host_side/g1_nav_loc_rviz2.sh    # nav + localization view
+bash tools/host_side/mapping_rviz2.sh       # mapping view
 ```
 
 | Launcher | RViz config | When to use |
 |---|---|---|
-| `tools/g1_nav_loc_rviz2.sh` | `configs/g1_nav_loc_rviz2.rviz` | G1 is running `tools/launch.sh` (6-step nav stack). Shows `/map_2d`, `/scan`, `/localization_3d`, TF, and the Nav2 plan / footprint when `nav2_launch.sh` is also up. Use this for daily nav operation, including `2D Pose Estimate` / `2D Goal Pose` interactions. |
-| `tools/mapping_rviz2.sh` | `configs/g1_mapping_rviz2.rviz` | G1 is running `tools/mapping/mapping_launch.sh` (4-step mapping stack). Shows `/accumulated_grid`, `/cloud_registered_body_1`, fast_lio's odometry trail. Use this while driving G1 around to fill in the map. |
+| `tools/host_side/g1_nav_loc_rviz2.sh` | `configs/g1_nav_loc_rviz2.rviz` | G1 is running `tools/nav/launch.sh` (6-step nav stack). Shows `/map_2d`, `/scan`, `/localization_3d`, TF, and the Nav2 plan / footprint when `nav2_launch.sh` is also up. Use this for daily nav operation, including `2D Pose Estimate` / `2D Goal Pose` interactions. |
+| `tools/host_side/mapping_rviz2.sh` | `configs/g1_mapping_rviz2.rviz` | G1 is running `tools/mapping/mapping_launch.sh` (4-step mapping stack). Shows `/accumulated_grid`, `/cloud_registered_body_1`, fast_lio's odometry trail. Use this while driving G1 around to fill in the map. |
 
 The G1 IP is hardcoded as `192.168.100.30` in both scripts (matches the
 22 other occurrences in the repo, kept literal for copy-paste readiness).
@@ -203,19 +203,19 @@ Pose` → planner → controller → twist_mux → `g1_write_node` → SDK
 ```bash
 # Window A — localization (holds session, Ctrl+C to stop)
 ssh unitree@<G1 ip>
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/launch.sh
 # wait for "=== ALL 6 NODES RUNNING ==="
 
 # Window B — Nav2 + twist_mux + g1_write_node (holds session)
 ssh unitree@<G1 ip>
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav2_launch.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/nav2_launch.sh
 # wait for "=== STACK READY: G1 motion ENABLED ==="
 
 # Window C — Rviz2 Display
-bash tools/g1_nav_loc_rviz2.sh
+bash tools/host_side/g1_nav_loc_rviz2.sh
 ```
 
-Then on Leo (RViz2 already attached): **2D Pose Estimate** to seed
+Then on host (RViz2 already attached): **2D Pose Estimate** to seed
 `open3d_loc` initial pose, **2D Goal Pose** to send a navigation goal.
 G1 walks toward the goal.
 
@@ -238,15 +238,15 @@ sufficient.
 
 | Tool | Behaviour | When to use |
 |---|---|---|
-| `tools/soft_stop.sh` | Cancels all `/navigate_to_pose` goals → twist_mux fallback to `cmd_vel_zero` (priority 1) → G1 stops **standing in sport mode** | Routine "stop the test". G1 immediately ready to accept a new goal. |
+| `tools/nav/soft_stop.sh` | Cancels all `/navigate_to_pose` goals → twist_mux fallback to `cmd_vel_zero` (priority 1) → G1 stops **standing in sport mode** | Routine "stop the test". G1 immediately ready to accept a new goal. |
 | `tools/estop.sh` | Calls `/emergency_stop` service → `emergency_flag_` set, SDK `stop_move()`, then `BALANCE_SQUAT_SQUAT_STAND` → G1 **stops + squats**. Toggle: second call clears `emergency_flag_` and G1 stands back up. | Real emergency. Fail-passive: even if balance fails mid-stop, G1 lands in a low stable posture. |
 
-Both wrappers live in the canon repo at `tools/soft_stop.sh` and
+Both wrappers live in the canon repo at `tools/nav/soft_stop.sh` and
 `tools/estop.sh`. The repo is bind-mounted into the container at
 `/g1_3d_nav_ros2/`, so the operator-side invocation is single-line:
 
 ```bash
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/soft_stop.sh   # routine
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/soft_stop.sh   # routine
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/estop.sh       # emergency (squats)
 ```
 
@@ -316,7 +316,7 @@ one-step rollback.
 
 ### Why a separate `mapping_launch.sh`
 
-The day-to-day stack starter `tools/launch.sh` (used for navigation)
+The day-to-day stack starter `tools/nav/launch.sh` (used for navigation)
 runs **6** components — `fast_lio` plus `open3d_loc`, `map_server`
 and `pointcloud_to_laserscan`. Those last three load and consume the
 *existing* `scans.pcd` / `accumulated_grid.pgm`. While that's fine
@@ -352,7 +352,7 @@ Equivalent to ROS1's three-terminal mapping flow
 # window A — hold this session open the whole time
 ssh unitree@<G1 ip>
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_launch.sh
-bash tools/mapping_rviz2.sh
+bash tools/host_side/mapping_rviz2.sh
 ```
 
 Wait for `=== MAPPING STACK READY (4 nodes, mapping mode) ===`. Then
@@ -421,7 +421,7 @@ DONE. New map files in /g1_3d_nav_ros2/maps/ :
 Next:
   1. Ctrl+C the mapping_launch.sh terminal
   2. Start the navigation stack so open3d_loc loads the new PCD:
-       docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
+       docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/launch.sh
   3. Verify ICP fitness >= 0.7
 ```
 
@@ -433,7 +433,7 @@ still working. See the troubleshooting block below.
 
 ```bash
 # window A — Ctrl+C the running mapping_launch.sh first, THEN:
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
+docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/launch.sh
 ```
 
 `open3d_loc` reads `scans.pcd` once at startup; `map_server` reads
@@ -477,7 +477,7 @@ The PGM/yaml landed in the canon repo's working tree. To capture
 the change in git:
 
 ```bash
-# Leo side
+# host side
 cd <your canon clone>
 ssh unitree@<G1 ip> 'cat /home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.pgm'  > maps/accumulated_grid.pgm
 ssh unitree@<G1 ip> 'cat /home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.yaml' > maps/accumulated_grid.yaml
@@ -708,7 +708,7 @@ If you need to stop G1 while a script is running:
 | Way | Effect | When |
 |---|---|---|
 | **Ctrl-C** in the goto/batch terminal | Soft stop (cancel goal, zero-vel, G1 standing). Script exits | Most common — "wrong target, change my mind" |
-| **`docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/soft_stop.sh`** in another terminal | Same soft stop, but doesn't exit the goto/batch script | Hands aren't on the goto terminal |
+| **`docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/soft_stop.sh`** in another terminal | Same soft stop, but doesn't exit the goto/batch script | Hands aren't on the goto terminal |
 | **`docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/estop.sh`** | Hard stop + squat (toggle: 2nd call to undo) | Real emergency, G1 about to fall / hit something |
 | **RC controller L2+B** | Hardware brake, independent of ROS | Always-available fallback |
 
