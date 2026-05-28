@@ -564,28 +564,31 @@ bool MapFileManager::savePGM(const std::string& filename, const nav_msgs::Occupa
   // 准备图像数据
   std::vector<uint8_t> image_data(map.info.width * map.info.height);
   
-  // 根据ROS map_server的标准转换占用栅格到PGM数据
+  // ROS map_server occupancy -> PGM pixel mapping.
   const double occupied_thresh = 0.65;
   const double free_thresh = 0.196;
   const bool negate = false;
-  
-  for (size_t i = 0; i < map.data.size(); ++i)
-  {
-    int8_t cell = map.data[i];
-    uint8_t pixel;
-    
-    if (cell == 0) {
-      // 自由空间 -> 根据negate转换
-      pixel = negate ? 0 : 254;
-    } else if (cell == 100) {
-      // 占用空间 -> 根据negate转换  
-      pixel = negate ? 254 : 0;
-    } else {
-      // 未知空间 -> 灰色
-      pixel = 205;
+  (void)occupied_thresh; (void)free_thresh;
+
+  // PGM image row 0 == image top == OccupancyGrid Y_max. Without this
+  // Y-flip, the saved PGM is upside-down relative to nav2 map_saver_cli;
+  // map_server then reloads it visually Y-mirrored vs the point cloud.
+  const uint32_t W = map.info.width;
+  const uint32_t H = map.info.height;
+  for (uint32_t y = 0; y < H; ++y) {
+    const uint32_t src_row = H - 1 - y;
+    for (uint32_t x = 0; x < W; ++x) {
+      int8_t cell = map.data[src_row * W + x];
+      uint8_t pixel;
+      if (cell == 0) {
+        pixel = negate ? 0 : 254;
+      } else if (cell == 100) {
+        pixel = negate ? 254 : 0;
+      } else {
+        pixel = 205;
+      }
+      image_data[y * W + x] = pixel;
     }
-    
-    image_data[i] = pixel;
   }
   
   // 写入图像数据
