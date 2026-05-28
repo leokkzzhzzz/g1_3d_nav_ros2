@@ -133,7 +133,7 @@ export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 export ZENOH_CONFIG_OVERRIDE='mode="client";connect/endpoints=["tcp/<G1 ip>:7448<port>"]'#use your G1 ip and port.
 export ZENOH_ROUTER_CHECK_ATTEMPTS=10
 ros2 daemon stop && ros2 daemon start && sleep 4
-rviz2 -d configs/g1_track0_rviz2.rviz
+rviz2 -d configs/g1_nav_loc_rviz2.rviz
 ```
 
 ### Critical first-launch step — set initial pose
@@ -151,6 +151,48 @@ Two ways:
 
 After `/localization_3d_confidence > 0.7`, the chain stays bounded for
 30+ minutes of stationary running.
+
+## RViz2 launchers (workstation)
+
+Two thin wrappers in `tools/` that bring up RViz2 on the operator's
+workstation, attached to the G1 Zenoh router on `tcp/<G1>:7448`. The
+wrappers source `/opt/ros/humble/setup.bash`, set
+`RMW_IMPLEMENTATION=rmw_zenoh_cpp` + `ZENOH_CONFIG_OVERRIDE` so they
+work from any shell, restart the ROS 2 daemon (otherwise discovery is
+flaky on the second run), and `exec rviz2 -d <repo>/configs/<view>.rviz`.
+
+The `.rviz` config path is resolved from the script's own location
+(`$(dirname "$0")/../configs/...`), so you can run them from the repo
+root or any other cwd:
+
+```bash
+# from the cloned repo on your workstation
+bash tools/g1_nav_loc_rviz2.sh    # nav + localization view
+bash tools/mapping_rviz2.sh       # mapping view
+```
+
+| Launcher | RViz config | When to use |
+|---|---|---|
+| `tools/g1_nav_loc_rviz2.sh` | `configs/g1_nav_loc_rviz2.rviz` | G1 is running `tools/launch.sh` (6-step nav stack). Shows `/map_2d`, `/scan`, `/localization_3d`, TF, and the Nav2 plan / footprint when `nav2_launch.sh` is also up. Use this for daily nav operation, including `2D Pose Estimate` / `2D Goal Pose` interactions. |
+| `tools/mapping_rviz2.sh` | `configs/g1_mapping_rviz2.rviz` | G1 is running `tools/mapping/mapping_launch.sh` (4-step mapping stack). Shows `/accumulated_grid`, `/cloud_registered_body_1`, fast_lio's odometry trail. Use this while driving G1 around to fill in the map. |
+
+The G1 IP is hardcoded as `192.168.100.30` in both scripts (matches the
+22 other occurrences in the repo, kept literal for copy-paste readiness).
+`tools/rename_host.sh <NEW_IP>` rewrites all of them in one go when the
+team moves to a new debugging site.
+
+Pre-conditions:
+- workstation has `ros-humble-rmw-zenoh-cpp` + `ros-humble-rviz2`
+- G1 has the matching stack running and the Zenoh router on
+  `tcp/<G1>:7448` is reachable from the workstation
+- DISPLAY is set (X11 / Wayland session); no extra forwarding needed
+  if you launch from a local terminal
+
+Note: `g1_nav_loc_rviz2.sh` was renamed from the legacy
+`g1_track0_rviz2.sh` (the "track0" name predates the merge of mapping
+and localization tracks and no longer reflected what the view shows).
+The matching `.rviz` was renamed accordingly: `configs/g1_track0_rviz2.rviz`
+→ `configs/g1_nav_loc_rviz2.rviz`.
 
 ## Daily operation — Nav2 + motion (D-011)
 
@@ -170,7 +212,7 @@ docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav2_launch.sh
 # wait for "=== STACK READY: G1 motion ENABLED ==="
 
 # Window C — Rviz2 Display
-bash /home/leo/g1_3d_nav_deploy/configs/g1_track0_rviz2.sh
+bash tools/g1_nav_loc_rviz2.sh
 ```
 
 Then on Leo (RViz2 already attached): **2D Pose Estimate** to seed
@@ -310,7 +352,7 @@ Equivalent to ROS1's three-terminal mapping flow
 # window A — hold this session open the whole time
 ssh unitree@<G1 ip>
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_launch.sh
-bash /home/leo/g1_3d_nav_deploy/configs/mapping_rviz2.sh
+bash tools/mapping_rviz2.sh
 ```
 
 Wait for `=== MAPPING STACK READY (4 nodes, mapping mode) ===`. Then
