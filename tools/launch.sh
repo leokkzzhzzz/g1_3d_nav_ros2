@@ -1,7 +1,7 @@
 #!/bin/bash
 # G1 3D Nav — 统一启动入口 (Docker / Native 自适应)
 # P3 path: 所有节点跑在 RMW=rmw_zenoh_cpp 之下,
-# rmw_zenohd 在 :7448 作为 Zenoh router (Leo 端 RViz2 直连).
+# rmw_zenohd 在 :7448 作为 Zenoh router (host 端 RViz2 直连).
 set +e  # 不因单步失败退出
 
 # ── 环境 ───────────────────────────────────────────
@@ -50,7 +50,7 @@ wait_for() { local desc=$1 cmd=$2 timeout=${3:-60}
 
 # ── 1. rmw_zenohd (Zenoh router 必须先起) ──────────
 # Router 在 :7448 监听, 后续节点用 client 模式连入.
-# Leo 端 RViz2 (RMW=rmw_zenoh_cpp) 直连 192.168.100.30:7448.
+# host 端 RViz2 (RMW=rmw_zenoh_cpp) 直连 <G1 ip>:7448.
 echo -n "[1/6] rmw_zenohd :7448 ... "
 ZENOH_CONFIG_OVERRIDE='listen/endpoints=["tcp/0.0.0.0:7448"];scouting/multicast/enabled=true' \
     ros2 run rmw_zenoh_cpp rmw_zenohd > /tmp/zenohd.log 2>&1 &
@@ -109,7 +109,7 @@ echo "rmw_zenohd:7448 → LiDAR → FAST-LIO → open3d_loc → map_server → l
 echo ""
 echo "Session stays alive. Press Ctrl+C to stop all."
 echo "Verify (G1): ros2 topic hz /localization_3d"
-echo "Verify (Leo): RMW=rmw_zenoh_cpp + connect tcp/192.168.100.30:7448 → ros2 topic list"
+echo "Verify (host): RMW=rmw_zenoh_cpp + connect tcp/<G1 ip>:7448 → ros2 topic list"
 
 # 保持 daemon 活着, 数据可读
 wait
