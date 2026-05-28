@@ -116,7 +116,7 @@ edited one side without the other). Investigate before forcing a rewrite.
        g1_nav_final:latest sleep infinity
    ```
 
-**On Leo (`192.168.100.13`):**
+**On your device (`xx.xx.xx.xx`):**
 
 ```bash
 sudo apt install ros-humble-rmw-zenoh-cpp ros-humble-rviz2
@@ -126,7 +126,7 @@ sudo apt install ros-humble-rmw-zenoh-cpp ros-humble-rviz2
 
 ```bash
 # 1. G1: stop ROS 1 path containers (if running)
-ssh unitree@192.168.100.30 'docker stop -t 2 g1_loc_ros1 g1_bridge 2>/dev/null'
+ssh unitree@192.168.100.30 'docker stop -t 2 g1_loc_ros1 g1_bridge 2>/dev/null' 
 
 # 2. G1: start the runtime container (if it was stopped)
 ssh unitree@192.168.100.30 'docker start 3d_nav_ros2'
@@ -178,6 +178,9 @@ docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
 ssh unitree@192.168.100.30
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav2_launch.sh
 # wait for "=== STACK READY: G1 motion ENABLED ==="
+
+# Window C — Rviz2 Display
+bash /home/leo/g1_3d_nav_deploy/configs/g1_track0_rviz2.sh
 ```
 
 Then on Leo (RViz2 already attached): **2D Pose Estimate** to seed
