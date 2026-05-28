@@ -478,7 +478,7 @@ ground_cloud_accumulator）的 ROS 2 一键等价。
 |---|---|---|
 | `target_frame` | `body` | reproject to robot body for nav |
 | `transform_tolerance` | `0.01` | match ROS 1 |
-| `min_height` | `-1.35` | include floor-level obstacles (G1 standing height ~1.3 m off ground) |
+| `min_height` | `-1.2` | include low obstacles (G1 LiDAR ~1.3 m up; -1.2 m skims just above floor) |
 | `max_height` | `0.15` | ignore overhead clutter |
 | `angle_min` / `max` | `±π` | full 360° |
 | `angle_increment` | `0.007` | ~0.4° resolution |
