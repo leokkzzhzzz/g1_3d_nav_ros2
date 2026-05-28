@@ -1,0 +1,145 @@
+Panels:
+  - Class: rviz/Displays
+    Help Height: 0
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Map1
+      Splitter Ratio: 0.5
+    Tree Height: 161
+  - Class: rviz/Tool Properties
+    Expanded:
+      - /Map Edit Tool1
+    Name: Tool Properties
+    Splitter Ratio: 0.5882350206375122
+  - Class: ros_map_edit/MapEditPanel
+    Name: MapEditPanel
+Preferences:
+  PromptSaveOnExit: true
+Toolbars:
+  toolButtonStyle: 2
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.699999988079071
+      Class: rviz/Map
+      Color Scheme: map
+      Draw Behind: false
+      Enabled: true
+      Name: Map
+      Topic: /map
+      Unreliable: false
+      Use Timestamp: false
+      Value: true
+    - Alpha: 0.8999999761581421
+      Class: rviz/Map
+      Color Scheme: map
+      Draw Behind: false
+      Enabled: true
+      Name: EditedMap
+      Topic: /map_edited
+      Unreliable: false
+      Use Timestamp: false
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /virtual_walls_markers
+      Name: VirtualWalls
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /region_markers
+      Name: Regions
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
+    - Alpha: 1
+      Class: rviz/Axes
+      Enabled: true
+      Length: 1
+      Name: Axes
+      Radius: 0.10000000149011612
+      Reference Frame: <Fixed Frame>
+      Show Trail: false
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Default Light: true
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+      Hide Inactive Objects: true
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+    - Class: rviz/Measure
+    - Class: rviz/SetInitialPose
+      Theta std deviation: 0.2617993950843811
+      Topic: /initialpose
+      X std deviation: 0.5
+      Y std deviation: 0.5
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+    - Class: ros_map_edit/MapEditTool
+      Edit Mode: None
+      Grid Size: 0.10000000149011612
+      Snap to Grid: false
+    - Class: ros_map_edit/VirtualWallTool
+      Color: 255; 0; 0
+      Line Width: 0.10000000149011612
+      Show Points: true
+    - Alpha: 0.5
+      Class: ros_map_edit/RegionTool
+      Color: 0; 255; 0
+      Frame ID: map
+      Region Parameter: 1
+      Region Type: 0
+      Show Points: true
+    - Brush Size: 1
+      Class: ros_map_edit/MapEraserTool
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 23.54593276977539
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Field of View: 0.7853981852531433
+      Focal Point:
+        X: 8.750863075256348
+        Y: 0.6627370119094849
+        Z: -11.656818389892578
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.8997969627380371
+      Target Frame: <Fixed Frame>
+      Yaw: 3.263181447982788
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 1016
+  Hide Left Dock: false
+  Hide Right Dock: false
+  MapEditPanel:
+    collapsed: false
+  QMainWindow State: 000000ff00000000fd000000010000000000000156000003a2fc0200000003fb000000100044006900730070006c006100790073010000003b000000dc000000c700fffffffb0000001e0054006f006f006c002000500072006f0070006500720074006900650073010000011d000000a40000005c00fffffffb00000018004d00610070004500640069007400500061006e0065006c01000001c7000002160000015f00ffffff000005de000003a200000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Tool Properties:
+    collapsed: false
+  Width: 1850
+  X: 70
+  Y: 27
