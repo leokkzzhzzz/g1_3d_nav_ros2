@@ -1,410 +1,179 @@
 # g1_3d_nav_ros2
 
-> Status: 2026-05-25 — verified end-to-end on G1 (xxx.xxx.xxx.xxx) with
-> cross-host RViz2 from host (xxx.xxx.xxx.xxx). Image:
+> Status: 2026-05-28 — verified end-to-end on G1 with cross-host RViz2 from a
+> workstation. Image: `docker.io/zwterzt/g1_3d_nav_ros2:latest` SHA
+> `137a5b46be62...`.
+
+ROS 2 Humble native 3D localization runtime for the Unitree G1 Edu humanoid.
+Single RMW (`rmw_zenoh_cpp`), no DDS bridge, no ros1_bridge.
 
 ## What this repo holds
 
-- **`3d_nav_g1/g1_ws/src/`** — full deepglint source tree (FAST_LIO, open3d_loc)
+- `3d_nav_g1/g1_ws/src/` — full deepglint source tree (FAST_LIO, open3d_loc)
   with all 2026-05-25 patches applied
-- **`3d_nav_g1/livox_ws/src/`** — Livox MID360 ROS 2 driver source
-- **`3d_nav_g1/deps/open3d141/`** — Open3D 0.14.1 headers + CMake config
-  (binary libs separate, see `3d_nav_g1/deps/open3d141/README.md`)
-- **`tools`** — tools for quick start mapping nav2 map_edit rviz2
-- **`maps/`** — 2D occupancy grid (3D PCD is build product, not in git — see
+- `3d_nav_g1/livox_ws/src/` — Livox MID360 ROS 2 driver source
+- `3d_nav_g1/deps/open3d141/` — Open3D 0.14.1 headers + CMake config (binary
+  libs separate, see `3d_nav_g1/deps/open3d141/README.md`)
+- `tools/nav/` — G1-container-side launch + brake scripts
+- `tools/mapping/` — G1-container-side mapping pipeline
+- `tools/host_side/` — workstation-side scripts (RViz2 launchers, map editor)
+- `tools/gotop/` — waypoint capture + nav + batch testing
+- `maps/` — 2D occupancy grid (3D PCD is build product, not in git — see
   `maps/README.md`)
-- **`configs/`** — host-side RViz2 config 
+- `configs/` — RViz2 configs + `g1_host.txt` source-of-truth IP
+
+The full set of patches is what makes the stack work — see `docs/DECISIONS.md`
+for the architecturally significant decisions.
 
 ## Runtime topology
 
 ```
-G1 (xxx.xxx.xxx.xxx)                         host (xxx.xxx.xxx.xxx)
+G1 (<G1 ip>)                                  workstation
 ┌─ 3d_nav_ros2 container ──────────────┐    ┌─ host install ─┐
 │ image: g1_nav_final:latest           │    │ rmw_zenoh_cpp  │
 │ net=host, ipc=host                   │    │ rviz2          │
-│ /g1_3d_nav_ros2/maps -> /home/unitree/.../maps │    └────────────────┘
-│                                      │            │
-│ [1/6] rmw_zenohd          :7448 ◄────┼──tcp/7448──┘ (RMW=rmw_zenoh_cpp client)
-│ [2/6] livox_ros_driver2              │
-│ [3/6] fast_lio (FAST-LIO odometry)   │
-│ [4/6] open3d_loc (ICP global loc)    │
-│ [5/6] map_server (/map_2d)           │
-│ [6/6] pointcloud_to_laserscan (/scan)│
+│                                      │    └────────────────┘
+│ [1/6] rmw_zenohd          :7448 ◄────┼──tcp/7448──┐
+│ [2/6] livox_ros_driver2              │            │ (RMW=rmw_zenoh_cpp client
+│ [3/6] fast_lio (FAST-LIO odometry)   │            │  + ZENOH_CONFIG_OVERRIDE)
+│ [4/6] open3d_loc (ICP global loc)    │            │
+│ [5/6] map_server (/map_2d)           │            │
+│ [6/6] pointcloud_to_laserscan (/scan)│            │
 └──────────────────────────────────────┘
 ```
 
-All nodes share `RMW_IMPLEMENTATION=rmw_zenoh_cpp` and connect to the
-in-container Zenoh router on `tcp/127.0.0.1:7448`. Leo connects to the same
-router across the network. No DDS bridge, no ros1_bridge.
+In-container nodes share `RMW_IMPLEMENTATION=rmw_zenoh_cpp` and connect to the
+in-container Zenoh router on `tcp/127.0.0.1:7448`. Workstation RViz2 connects
+to the same router across the network.
 
-## Network host management
+## Zenoh workflow
 
-Throughout this README, in `tools/nav/launch.sh`, and in side READMEs (`maps/`,
-`data/`, `botbrain/`), the G1 robot's IP appears as the literal string
-`xxx.xxx.xxx.xxx` — roughly 22 occurrences in operator-facing commands.
-The literal is intentional: copy-paste readiness beats template variables
-when an operator is debugging on G1 directly. The cost is that when the
-team moves to a new debugging site and the G1 IP changes, all 22 places
-have to change together.
+跨机器 ROS 2 通信全程走 Zenoh，不用 DDS。三件事记牢：
 
-Single source of truth: **`configs/g1_host.txt`** — one line, the current
-G1 IP. **No runtime process reads this file.** Cross-host Zenoh discovery
-is still configured at run time via `ZENOH_CONFIG_OVERRIDE` on the
-operator's shell (see [Per-run startup](#per-run-startup) below). The
-host file exists only so `tools/rename_host.sh` knows what to replace
-with what, and so any reader can answer "what's the current G1 IP?" with
-a single `cat configs/g1_host.txt`.
-
-### Renaming the G1 host
-
-```bash
-bash tools/rename_host.sh <NEW_IP>          # rewrite all references
-git diff                                    # review the changes
-git commit -am "rename G1 host: <OLD> -> <NEW>"
-```
-
-For a preview without writing anything:
-
-```bash
-bash tools/rename_host.sh --dry-run <NEW_IP>
-```
-
-The script reads the current ("old") IP from `configs/g1_host.txt`,
-rewrites every git-tracked occurrence, then writes the new IP back to the
-host file as the last step.
-
-### What the script excludes
-
-| Excluded | Why |
-|---|---|
-| `docs/TEST_REPORTS/**` | Historical evidence — these reports record runs at past sites. The IP belongs to the evidence, not the configuration. |
-| `README.md` `> Status:` line | Same — the line asserts "verified end-to-end on G1 (<G1 ip>)" on a specific date and SHA. |
-| `configs/g1_host.txt` itself | Rewritten as the last step. |
-
-If `tools/rename_host.sh` aborts with *"old IP appears nowhere else in
-the tree"*, the source of truth is out of sync with the repo (something
-edited one side without the other). Investigate before forcing a rewrite.
-
-## Quickstart
-
-### Prerequisites (one-off)
-
-**On G1 :**
-
-1. Pull the Docker image:
+1. **G1 容器内**：`rmw_zenohd` 监听 `0.0.0.0:7448`；所有节点（fast_lio /
+   open3d_loc / map_server / nav2 / etc.）用 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`，
+   作为 client 连本地 router `tcp/127.0.0.1:7448`。
+2. **workstation 端**：`rviz2` 启动前 export 三件套——
    ```bash
-   docker pull us-central1-docker.pkg.dev/dreamcontroltrain/g1-nav/3d_nav_g1:latest
-   docker tag  us-central1-docker.pkg.dev/dreamcontroltrain/g1-nav/3d_nav_g1:latest g1_nav_final:latest
+   export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+   export ZENOH_CONFIG_OVERRIDE='mode="client";connect/endpoints=["tcp/<G1 ip>:7448"]'
+   export ZENOH_ROUTER_CHECK_ATTEMPTS=10
    ```
-2. Place `scans.pcd` at `/home/unitree/g1_3d_nav_ros2_repo/maps/scans.pcd` (see
-   `maps/README.md` for how to obtain).
-3. Create the runtime container if it does not exist:
-   ```bash
-   docker run -d --name 3d_nav_ros2 \
-       --network host --ipc host \
-       -v /home/unitree/g1_3d_nav_ros2_repo/maps:/g1_3d_nav_ros2/maps \
-       g1_nav_final:latest sleep infinity
-   ```
+   `7448` 是 G1 容器 zenohd 监听的固定端口（除非你在 G1 上跑了别的 zenohd 改了
+   端口才需要改）。`<G1 ip>` 默认 `192.168.100.30`（见 `configs/g1_host.txt`）。
+3. **环境刷新**：`ros2 daemon stop && ros2 daemon start && sleep 4` ——
+   没这步第二次启动 ros2 cli 时 discovery 偶发飘忽。
 
-**On your device :**
+`tools/host_side/g1_nav_loc_rviz2.sh` 和 `tools/host_side/mapping_rviz2.sh`
+把上面三件套全做了；操作员只要 `bash` 一下脚本。
 
-```bash
-sudo apt install ros-humble-rmw-zenoh-cpp ros-humble-rviz2
-```
+## Quickstart — one-off setup
 
-### Per-run startup
+### 1. Clone 仓库（workstation 端 + G1 端各一次）
 
 ```bash
-# 1. G1: stop ROS 1 path containers (if running)
-ssh unitree@<G1 ip> 'docker stop -t 2 g1_loc_ros1 g1_bridge 2>/dev/null' 
+[host] git clone https://github.com/leokkzzhzzz/g1_3d_nav_ros2.git
+[host] cd g1_3d_nav_ros2
 
-# 2. G1: start the runtime container (if it was stopped)
-ssh unitree@<G1 ip> 'docker start 3d_nav_ros2'
-
-# 3. G1: launch the 6-step stack inside the container
-ssh unitree@<G1 ip>\
-  'docker exec -d 3d_nav_ros2 bash -c "cd /root && bash launch.sh > /tmp/launch.log 2>&1"'
-
-# 4. Wait ~90 s, then verify all 6 steps OK:
-ssh unitree@<G1 ip> 'docker exec 3d_nav_ros2 tail -15 /tmp/launch.log'
-
-# 5. Host: launch RViz2 connected to the G1 Zenoh router
-export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-export ZENOH_CONFIG_OVERRIDE='mode="client";connect/endpoints=["tcp/<G1 ip>:7448<port>"]'#use your G1 ip and port.
-export ZENOH_ROUTER_CHECK_ATTEMPTS=10
-ros2 daemon stop && ros2 daemon start && sleep 4
-rviz2 -d configs/g1_nav_loc_rviz2.rviz
+[G1]   ssh unitree@<G1 ip>
+[G1]   git clone https://github.com/leokkzzhzzz/g1_3d_nav_ros2.git \
+            /home/unitree/g1_3d_nav_ros2_repo
 ```
 
-### Critical first-launch step — set initial pose
+> G1 端 clone 路径**必须是** `/home/unitree/g1_3d_nav_ros2_repo`——这个路径
+> 是容器 mount 的源（步骤 4），所有 `tools/` 通过这个 mount 进容器。
 
-`open3d_loc` ICP needs the robot to start within ~1 m of where the offline
-PCD says it is. Without it, `/localization_3d_confidence` stays at 0.0,
-`map → odom` is never corrected, and `fast_lio` will eventually drift to
-non-physical coordinates.
-
-Two ways:
-
-1. **Manually re-position G1** at a known origin and restart `bash /g1_3d_nav_ros2/tools/nav/launch.sh`.
-2. **Use RViz2 "2D Pose Estimate" tool** — publishes `/initialpose`, open3d_loc
-   subscribes and re-seeds.
-
-After `/localization_3d_confidence > 0.7`, the chain stays bounded for
-30+ minutes of stationary running.
-
-## RViz2 launchers (workstation)
-
-Two thin wrappers in `tools/` that bring up RViz2 on the operator's
-workstation, attached to the G1 Zenoh router on `tcp/<G1>:7448`. The
-wrappers source `/opt/ros/humble/setup.bash`, set
-`RMW_IMPLEMENTATION=rmw_zenoh_cpp` + `ZENOH_CONFIG_OVERRIDE` so they
-work from any shell, restart the ROS 2 daemon (otherwise discovery is
-flaky on the second run), and `exec rviz2 -d <repo>/configs/<view>.rviz`.
-
-The `.rviz` config path is resolved from the script's own location
-(`$(dirname "$0")/../configs/...`), so you can run them from the repo
-root or any other cwd:
+### 2. workstation 装 zenoh_cpp + rviz2
 
 ```bash
-# from the cloned repo on your workstation
-bash tools/host_side/g1_nav_loc_rviz2.sh    # nav + localization view
-bash tools/host_side/mapping_rviz2.sh       # mapping view
+[host] sudo apt install ros-humble-rmw-zenoh-cpp ros-humble-rviz2
 ```
 
-| Launcher | RViz config | When to use |
-|---|---|---|
-| `tools/host_side/g1_nav_loc_rviz2.sh` | `configs/g1_nav_loc_rviz2.rviz` | G1 is running `tools/nav/launch.sh` (6-step nav stack). Shows `/map_2d`, `/scan`, `/localization_3d`, TF, and the Nav2 plan / footprint when `nav2_launch.sh` is also up. Use this for daily nav operation, including `2D Pose Estimate` / `2D Goal Pose` interactions. |
-| `tools/host_side/mapping_rviz2.sh` | `configs/g1_mapping_rviz2.rviz` | G1 is running `tools/mapping/mapping_launch.sh` (4-step mapping stack). Shows `/accumulated_grid`, `/cloud_registered_body_1`, fast_lio's odometry trail. Use this while driving G1 around to fill in the map. |
-
-The G1 IP is hardcoded as `192.168.100.30` in both scripts (matches the
-22 other occurrences in the repo, kept literal for copy-paste readiness).
-`tools/rename_host.sh <NEW_IP>` rewrites all of them in one go when the
-team moves to a new debugging site.
-
-Pre-conditions:
-- workstation has `ros-humble-rmw-zenoh-cpp` + `ros-humble-rviz2`
-- G1 has the matching stack running and the Zenoh router on
-  `tcp/<G1>:7448` is reachable from the workstation
-- DISPLAY is set (X11 / Wayland session); no extra forwarding needed
-  if you launch from a local terminal
-
-Note: `g1_nav_loc_rviz2.sh` was renamed from the legacy
-`g1_track0_rviz2.sh` (the "track0" name predates the merge of mapping
-and localization tracks and no longer reflected what the view shows).
-The matching `.rviz` was renamed accordingly: `configs/g1_track0_rviz2.rviz`
-→ `configs/g1_nav_loc_rviz2.rviz`.
-
-## Daily operation — Nav2 + motion (D-011)
-
-End-to-end goal-driven motion was verified on 2026-05-26: RViz2 `2D Goal
-Pose` → planner → controller → twist_mux → `g1_write_node` → SDK
-`LocoClient::Move()` → G1 walks. The full stack starts in two SSH sessions:
+### 3. G1 端拉镜像
 
 ```bash
-# Window A — localization (holds session, Ctrl+C to stop)
-ssh unitree@<G1 ip>
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/launch.sh
-# wait for "=== ALL 6 NODES RUNNING ==="
-
-# Window B — Nav2 + twist_mux + g1_write_node (holds session)
-ssh unitree@<G1 ip>
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/nav2_launch.sh
-# wait for "=== STACK READY: G1 motion ENABLED ==="
-
-# Window C — Rviz2 Display
-bash tools/host_side/g1_nav_loc_rviz2.sh
+[G1] docker pull docker.io/zwterzt/g1_3d_nav_ros2:latest
+[G1] docker tag  docker.io/zwterzt/g1_3d_nav_ros2:latest g1_nav_final:latest
 ```
 
-Then on host (RViz2 already attached): **2D Pose Estimate** to seed
-`open3d_loc` initial pose, **2D Goal Pose** to send a navigation goal.
-G1 walks toward the goal.
-
-### Safety preconditions (operator's responsibility)
-
-`nav2_launch.sh` enables motion by default. The operator must satisfy
-all four before sending a goal:
-
-1. Operator on site, can see G1 directly.
-2. ≥ 1 m clearance around G1; not on a ledge.
-3. RC controller in hand; **L2 + B is the hardware brake** (independent
-   of the ROS stack).
-4. At least one in-stack brake reachable. Two are provided.
-
-For unattended / production deploy, the dead-man-switch (Roadmap R-005)
-is required. For supervised testing, the four preconditions above are
-sufficient.
-
-### Two in-stack brakes — pick by intent
-
-| Tool | Behaviour | When to use |
-|---|---|---|
-| `tools/nav/soft_stop.sh` | Cancels all `/navigate_to_pose` goals → twist_mux fallback to `cmd_vel_zero` (priority 1) → G1 stops **standing in sport mode** | Routine "stop the test". G1 immediately ready to accept a new goal. |
-| `tools/estop.sh` | Calls `/emergency_stop` service → `emergency_flag_` set, SDK `stop_move()`, then `BALANCE_SQUAT_SQUAT_STAND` → G1 **stops + squats**. Toggle: second call clears `emergency_flag_` and G1 stands back up. | Real emergency. Fail-passive: even if balance fails mid-stop, G1 lands in a low stable posture. |
-
-Both wrappers live in the canon repo at `tools/nav/soft_stop.sh` and
-`tools/estop.sh`. The repo is bind-mounted into the container at
-`/g1_3d_nav_ros2/`, so the operator-side invocation is single-line:
+### 4. G1 端创建 3d_nav_ros2 容器
 
 ```bash
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/soft_stop.sh   # routine
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/estop.sh       # emergency (squats)
+[G1] docker run -d --name 3d_nav_ros2 \
+        --network host --ipc host \
+        -v /home/unitree/g1_3d_nav_ros2_repo:/g1_3d_nav_ros2 \
+        -v /home/unitree/g1_3d_nav_ros2_repo/maps:/g1_3d_nav_ros2/maps \
+        g1_nav_final:latest sleep infinity
 ```
 
-The wrappers self-source ROS env and `RMW_IMPLEMENTATION=rmw_zenoh_cpp`
-so they work regardless of the caller shell. Because the repo is
-bind-mounted, `git pull` on the G1 host immediately makes any
-updated tool available inside the container — no `docker cp`.
+容器启动后是个空 daemon，所有 `tools/` 通过 mount 立即可用，`git pull` 在
+host 上做 → 容器内立即生效，无需 `docker cp`。
 
-### Troubleshooting — `base_footprint frame does not exist` after restart
+### 5. 准备 scans.pcd
 
-Symptom: `/tmp/nav2.log` floods with
-`Invalid frame ID "base_footprint" passed to canTransform`. RViz2 sees
-goal acks but no plan polyline; G1 doesn't move.
+新场地 → 跳到 [Mapping](#mapping) 自己建。
+有现成 PCD（≥ 1 MB） → 放到 `/home/unitree/g1_3d_nav_ros2_repo/maps/scans.pcd`。
 
-Root cause: the host-side D-009 fork sets `robot_base_frame: body`, and
-this is bind-mounted single-file over
-`/botbrain_ws/install/g1_pkg/share/g1_pkg/config/nav2_params.yaml`.
-Static checks (`docker inspect`, `cat` inside the container) all show
-the mount as expected, but in some `nav2_launch.sh` restarts the running
-nav2 processes still see the upstream `base_footprint`. The mount
-overlay appears to need a full container re-start to take effect cleanly.
-
-Workaround:
-```bash
-docker stop 3d_nav_ros2 && docker start 3d_nav_ros2
-# then re-run launch.sh + nav2_launch.sh in two windows
-```
-After this, `grep -c base_footprint /tmp/nav2.log` should be `0` and the
-goal-driven motion loop works. Tracked as Roadmap R-009.
+---
 
 ## Mapping
 
-The ROS2-native mapping pipeline. Use this when you need to (re)build
-the maps for a new environment or to fix ICP-fitness-low ("the robot
-drifts after walking around") symptoms in the existing one.
+什么时候用：(a) 第一次给新场地建图、(b) 现场地图对不上现实需要重建。
 
-**What you get out of it:** two files written into
-`/g1_3d_nav_ros2/maps/` (== host `/home/unitree/g1_3d_nav_ros2_repo/maps/`,
-the canon repo working tree):
+**输出**（写到 host `/home/unitree/g1_3d_nav_ros2_repo/maps/`）：
 
-- `scans.pcd` — 3D point cloud, used by `open3d_loc` for ICP localization
-- `accumulated_grid.pgm` + `.yaml` — 2D occupancy grid, used by nav2's
-  static layer
+| 文件 | 用途 |
+|---|---|
+| `scans.pcd` | 3D 全局点云，open3d_loc 加载用作 ICP 模板 |
+| `accumulated_grid.pgm` + `.yaml` | 2D 占用栅格，map_server 加载发布到 `/map_2d`，nav2 静态层用 |
 
-### Prerequisites
-
-- The `3d_nav_ros2` container exists and uses the new mount layout
-  (`/home/unitree/g1_3d_nav_ros2_repo/maps:/g1_3d_nav_ros2/maps`).
-  If you're migrating from the old `/home/unitree/g1_3d_nav/maps`
-  mount or from the older `/root/maps` layout, do this once:
-  ```bash
-  ssh unitree@<G1 ip>
-  cp /home/unitree/g1_3d_nav/maps/scans.pcd \
-     /home/unitree/g1_3d_nav_ros2_repo/maps/scans.pcd
-  cd /home/unitree/g1_3d_nav_ros2_repo && git pull
-  docker stop 3d_nav_ros2 && docker rm 3d_nav_ros2
-  bash tools/recreate_3d_nav_ros2.sh
-  ```
-- The repo is bind-mounted into the container at `/g1_3d_nav_ros2/`,
-  so the mapping wrappers (`tools/mapping/mapping_launch.sh`,
-  `tools/mapping/mapping_save.sh`, `tools/mapping/grid_accumulator.py`)
-  are immediately available inside the container after `git pull`. No
-  `docker cp` step.
-
-### Why a separate `mapping_launch.sh`
-
-The day-to-day stack starter `tools/nav/launch.sh` (used for navigation)
-runs **6** components — `fast_lio` plus `open3d_loc`, `map_server`
-and `pointcloud_to_laserscan`. Those last three load and consume the
-*existing* `scans.pcd` / `accumulated_grid.pgm`. While that's fine
-for navigation, it's actively harmful while you're trying to *build*
-new maps:
-
-- `open3d_loc` would ICP-match against the old `scans.pcd` you're
-  about to replace — its fitness drops to 0 the moment G1 walks
-  past the old map's coverage, and the resulting drift contaminates
-  fast_lio's odometry
-- `map_server` would publish the stale `accumulated_grid.pgm` on
-  `/map_2d` — anything subscribed to it sees the old environment
-- `pointcloud_to_laserscan` is for nav2's local costmap — not part
-  of the mapping pipeline
-
-`tools/mapping/mapping_launch.sh` runs only what mapping actually
-needs:
-
-```
-[1/4] rmw_zenohd          ← Zenoh router (must be first)
-[2/4] LiDAR Driver        ← Livox MID360
-[3/4] FAST-LIO            ← mapping mode, /map_save service
-[4/4] grid_accumulator    ← 2D OccupancyGrid on /accumulated_grid
-```
-
-Equivalent to ROS1's three-terminal mapping flow
-(`livox_ros_driver2` + `fast_lio mapping_g1_full` +
-`ground_cloud_accumulator`), all-in-one ROS2.
-
-### Step 1 — bring up the mapping stack
+### 启动建图栈（4 节点）
 
 ```bash
-# window A — hold this session open the whole time
-ssh unitree@<G1 ip>
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_launch.sh
-bash tools/host_side/mapping_rviz2.sh
+# Window A — G1：建图栈
+[G1] ssh unitree@<G1 ip>
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_launch.sh
+# 等 "=== MAPPING STACK READY (4 nodes, mapping mode) ==="
+# 再等 ~10 秒 /tmp/fastlio.log 出现 "IMU Initial Done"
+# 这期间 G1 必须站着别动
+
+# Window B — workstation：可视化
+[host] cd <repo>
+[host] bash tools/host_side/mapping_rviz2.sh
 ```
 
-Wait for `=== MAPPING STACK READY (4 nodes, mapping mode) ===`. Then
-wait another ~10 seconds for `IMU Initial Done` to appear in
-`/tmp/fastlio.log` — during this window G1 must be standing still
-(sport mode, no walking yet).
-
-**Pick the spot where G1 is standing right now** as your map origin.
-The 2D grid's origin and the 3D PCD's frame zero will both be tied
-to this physical position. Floor tape it so you can come back later
-if needed.
-
-To watch grid accumulation in real time, in another terminal:
+实时看建图进度：
 
 ```bash
-docker exec 3d_nav_ros2 tail -f /tmp/grid.log
-# every 5 seconds: frames=N ground=N obs=N grid=WxH
+[G1] docker exec 3d_nav_ros2 tail -f /tmp/grid.log
+# 每 5s 打印 frames=N ground=N obs=N grid=WxH
 ```
 
-### Step 2 — drive G1 around the workspace
+### 驱动 G1 走一圈
 
-Use the RC controller, sport mode, slow walk. **The single
-viewpoint of a stationary scan has blind spots — driving around is
-how those get filled.** The accuracy of the rest of your testing
-depends on this step.
+RC 手柄 + sport mode + 慢走。要点：
 
-Recommended motion pattern:
+- 走遍所有未来要标 waypoint 的位置
+- 每个门 / 走廊从两个方向都过一遍
+- 在每个 waypoint 候选位置**停 5 秒**，让 fast_lio 累积稠密局部点云
+- 原地慢转 360°，让 LiDAR 扫到周围
+- 总共 5–15 分钟典型；短了有盲区
 
-- Cover every place you'll later put a waypoint
-- Pass through every doorway / narrow corridor from both directions
-- At each future-waypoint location, **stop for ~5 seconds** to let
-  fast_lio accumulate dense local geometry there
-- Take some "facing rotations" in place — turn slowly so the LiDAR
-  sweeps the surroundings from each viewpoint
-- 5 to 15 minutes total is typical; longer is fine, shorter risks
-  blind spots
+走完**回到起点**（floor tape 标记的 G1 起始位置）—— 这让后面 ICP 容易对齐。
 
-When done, **drive G1 back to the floor-tape origin** (Step 1 spot).
-This makes the post-map-restart alignment trivial.
+### 保存：在 Window A 终端按 Ctrl+C
 
-### Step 3 — dump the maps
+`mapping_launch.sh` 装了 SIGINT trap：你按 Ctrl+C 它**自动调** `mapping_save.sh`
+保存，不用单独再跑命令（ADR-007）。
 
-```bash
-# window B
-ssh unitree@<G1 ip>
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_save.sh
-```
-
-Expected output:
+预期输出：
 
 ```
+=== Ctrl+C received — running mapping_save.sh ===
 [1/3] dumping 3D PCD via fast_lio /map_save ...
   ok: /g1_3d_nav_ros2/maps/scans.pcd (2382777 bytes)
 [2/3] dumping 2D PGM via map_saver_cli ...
-  ok: /g1_3d_nav_ros2/maps/accumulated_grid.pgm + /g1_3d_nav_ros2/maps/accumulated_grid.yaml
+  ok: /g1_3d_nav_ros2/maps/accumulated_grid.pgm + .yaml
 [3/3] fixing yaml image path ...
 
 DONE. Files in /g1_3d_nav_ros2/maps/ :
@@ -413,408 +182,366 @@ DONE. Files in /g1_3d_nav_ros2/maps/ :
  -rw-rw-r-- 1 1000 1000     124 ... accumulated_grid.yaml
 ```
 
-After it returns:
+落盘位置（容器内 ↔ host 一一对应，同一份文件）：
 
-1. Ctrl+C the `mapping_launch.sh` terminal.
-2. Start the navigation stack so `open3d_loc` loads the new PCD:
-   `docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/launch.sh`
-3. Verify ICP fitness >= 0.7.
+| 容器内 | host 上 |
+|---|---|
+| `/g1_3d_nav_ros2/maps/scans.pcd` | `/home/unitree/g1_3d_nav_ros2_repo/maps/scans.pcd` |
+| `/g1_3d_nav_ros2/maps/accumulated_grid.pgm` | `…/maps/accumulated_grid.pgm` |
+| `/g1_3d_nav_ros2/maps/accumulated_grid.yaml` | `…/maps/accumulated_grid.yaml` |
 
-If you don't see "DONE." or any step says FAIL, **don't switch to
-the navigation stack yet** — your old map is still in place and
-still working. See the troubleshooting block below.
+PGM/yaml 可以 commit 进仓库当 canon。`scans.pcd` 不进 git（每场地独立、太大）。
 
-### Step 4 — switch to the navigation stack to load the new maps
+### 验证 ICP fitness ≥ 0.7
 
-```bash
-# window A — Ctrl+C the running mapping_launch.sh first, THEN:
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/launch.sh
-```
-
-`open3d_loc` reads `scans.pcd` once at startup; `map_server` reads
-`accumulated_grid.{pgm,yaml}` once at startup too. The mapping stack
-doesn't load these — that's why the swap to `launch.sh` is required
-for the new maps to take effect.
-
-### Step 5 — verify ICP fitness ≥ 0.7
+切到导航栈（下节）后看：
 
 ```bash
-ssh unitree@<G1 ip> \
-  'docker exec 3d_nav_ros2 tail -50 /tmp/loc.log | grep fitness | tail -10'
+[G1] docker exec 3d_nav_ros2 tail -50 /tmp/loc.log | grep fitness | tail -10
 ```
 
-Expected:
+`reg_result.fitness` 持续 ≥ 0.7 才算建图成功。低于 0.7 → workspace 扫得不够、
+重建。
 
+---
+
+## Map editing — `ros_map_edit`
+
+mapping_save.sh 出来的 raw PGM 经常需要手工修：墙壁中间的雷达噪点要擦、画
+虚拟墙限制 nav2、标记 region 等。`tools/host_side/map_edit/` 是一个 self-
+contained 的 ROS 1 noetic Docker 镜像 + RViz panel，跑在 **workstation 端**。
+完整文档见 [`tools/host_side/map_edit/README.md`](tools/host_side/map_edit/README.md)。
+
+### 一次性准备（workstation 端）
+
+```bash
+[host] cd tools/host_side/map_edit
+[host] docker build -t map_edit_rviz:latest .
+
+[host] mkdir -p "$HOME/g1_maps"
+[host] docker run -d --name map_edit_rviz \
+        -e DISPLAY="$DISPLAY" \
+        -v /tmp/.X11-unix:/tmp/.X11-unix \
+        -v "$HOME/g1_maps:/root/maps" \
+        map_edit_rviz:latest
 ```
-reg_result.fitness: 0.83  ...
-reg_result.fitness: 0.79  ...
+
+### 编辑 + 回传流程
+
+```bash
+# 1. 从 G1 拉地图到 workstation
+[host] scp unitree@<G1 ip>:/home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.{pgm,yaml} \
+        "$HOME/g1_maps/"
+[host] sed -i 's|^image:.*|image: accumulated_grid.pgm|' "$HOME/g1_maps/accumulated_grid.yaml"
+
+# 2. 启动编辑器
+[host] bash tools/host_side/map_edit/start_map_edit.sh /root/maps/accumulated_grid.yaml
+
+# 3. RViz2 里：
+#    - MapEraser  → 黑/白擦除（改占用 / 自由 cell）
+#    - VirtualWall → 画虚拟墙（两点画线）
+#    - Region      → 画多边形区域
+#    - 编辑完点绿色 "Save All Files" 按钮
+#    保存到 $HOME/g1_maps/accumulated_grid.{pgm,yaml,json,_region.json}
+
+# 4. 传回 G1（mode: trinary 是 ros_map_edit 漏写，要补；image: 改回容器内绝对路径）
+[host] grep -q '^mode:' "$HOME/g1_maps/accumulated_grid.yaml" \
+        || sed -i '2a mode: trinary' "$HOME/g1_maps/accumulated_grid.yaml"
+[host] sed -i 's|^image:.*|image: /g1_3d_nav_ros2/maps/accumulated_grid.pgm|' \
+        "$HOME/g1_maps/accumulated_grid.yaml"
+[host] scp "$HOME/g1_maps"/accumulated_grid.{pgm,yaml,json} \
+        unitree@<G1 ip>:/home/unitree/g1_3d_nav_ros2_repo/maps/
+
+# 5. G1 端 hot-reload map_server（不用重启 nav 栈）
+[G1] docker exec 3d_nav_ros2 bash -c '
+    source /opt/ros/humble/setup.bash; source /botbrain_ws/install/setup.bash
+    export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+    export ZENOH_CONFIG_OVERRIDE="mode=\"client\";connect/endpoints=[\"tcp/127.0.0.1:7448\"]"
+    ros2 service call /map_server/load_map nav2_msgs/srv/LoadMap \
+        "{map_url: /g1_3d_nav_ros2/maps/accumulated_grid.yaml}"'
 ```
 
-ICP fitness above 0.7 is the threshold open3d_loc uses to decide
-whether to publish a `map → odom` correction. **If your fitness
-stays below 0.7, the new map is not going to work** — the rest of
-the navigation chain depends on this. Skip to the troubleshooting
-block, do not start any waypoint test.
+---
 
-### Troubleshooting mapping
+## Localization + Navigation
 
-| Symptom | Likely cause | Fix |
+End-to-end goal-driven motion verified 2026-05-26: RViz2 `2D Goal Pose` →
+planner → controller → twist_mux → `g1_write_node` → SDK `LocoClient::Move()`
+→ G1 walks.
+
+### 启动顺序（3 个终端）
+
+```bash
+# Window A — G1：定位栈（6 节点）
+[G1] ssh unitree@<G1 ip>
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/launch.sh
+# 等 "=== ALL 6 NODES RUNNING ==="
+
+# Window B — G1：Nav2 + twist_mux + g1_write_node（运动闭环）
+[G1] ssh unitree@<G1 ip>
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/nav2_launch.sh
+# 等 "=== STACK READY: G1 motion ENABLED ==="
+
+# Window C — workstation：RViz2
+[host] cd <repo>
+[host] bash tools/host_side/g1_nav_loc_rviz2.sh
+```
+
+### 第一次必做：在 RViz2 设初始 pose
+
+`open3d_loc` ICP 需要 G1 启动时位姿在 PCD 地图的 ~1 m 范围内。否则
+`/localization_3d_confidence` 一直是 0、`map → odom` 不修正、fast_lio 长跑
+会 drift 到非物理坐标。
+
+启 nav 栈后在 RViz2 用 **2D Pose Estimate**（绿色箭头）→ 点击 G1 实际位置
++ 拖箭头对齐前进方向。`/localization_3d_confidence > 0.7` 后链路稳定，30
+分钟静态运行不漂。
+
+完成后 RViz2 用 **2D Goal Pose** 发目标，G1 走过去。
+
+### Safety preconditions（操作员责任）
+
+`nav2_launch.sh` 默认开启 motion。发 goal 前必须满足 4 条：
+
+1. 操作员在场，能直接看到 G1
+2. G1 周围 ≥ 1 m 净空，不在台阶边
+3. RC 在手 — **L2 + B 是硬件刹车**（独立于 ROS 栈）
+4. 至少一种软件刹车（下面的 soft_stop 或 estop）手边能调
+
+### Brakes（软件刹车）
+
+| 工具 | 行为 | 何时用 |
 |---|---|---|
-| `mapping_save.sh` says "fast_lio did not produce a non-empty test.pcd" | `pcd_save_en: false` in mid360.yaml, or fast_lio has been running for <30 s | Check yaml; let it run longer before saving |
-| `mapping_save.sh` says "no map saver service" | `mapping_launch.sh` is not running, or grid_accumulator hasn't published `/accumulated_grid` yet | Start `mapping_launch.sh` in window A; let it run long enough that `/tmp/grid.log` shows `frames>0 grid=WxH` |
-| Fitness stays at 0.0 after restart | The PCD was dumped while G1 had drifted — fast_lio's odom != map origin | Re-run mapping starting from a fresh `docker stop && start`; G1 stays still until "IMU Initial Done"; finish back at the start position |
-| Fitness oscillates 0.3–0.6 | Workspace was scanned from too few viewpoints | Re-run mapping with more rotations + back-and-forth coverage |
-| New map breaks something but old map worked | Roll back: `cd /g1_3d_nav_ros2/maps/ && for f in scans.pcd accumulated_grid.pgm accumulated_grid.yaml; do mv "$f.bak" "$f"; done`, then restart launch.sh | — |
-
-### Versioning the new PGM in canon (optional)
-
-The PGM/yaml landed in the canon repo's working tree. To capture
-the change in git:
+| `tools/nav/soft_stop.sh` | 取消所有 `/navigate_to_pose` goal → twist_mux fallback `cmd_vel_zero` → G1 **原地保持站立** | 常规"停一下"。立即可发新 goal |
+| `tools/estop.sh` | 调 `/emergency_stop` 服务 → SDK `stop_move()` + `BALANCE_SQUAT_SQUAT_STAND` → G1 **停 + 蹲下**。再调一次复位站起 | 真紧急。Fail-passive：即使 balance 失效也以低姿态着地 |
 
 ```bash
-# host side
-cd <your canon clone>
-ssh unitree@<G1 ip> 'cat /home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.pgm'  > maps/accumulated_grid.pgm
-ssh unitree@<G1 ip> 'cat /home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.yaml' > maps/accumulated_grid.yaml
-git add maps/accumulated_grid.* && git commit -m "maps: re-mapped <date>" && git push
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/soft_stop.sh   # 常规
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/estop.sh           # 紧急
 ```
 
-`scans.pcd` stays out of git regardless — it's per-environment and
-too large.
+### Troubleshooting — `base_footprint frame does not exist`
 
-## Gotop — capture waypoints + navigate to one
-
-This section covers the testing toolkit for "drive G1 to a named spot
-and check whether nav2 actually got it there." Three tools, all in
-`tools/`, all label-driven (no fixed point count).
-
-### Tool overview
-
-| Tool | What it does | When to use |
-|---|---|---|
-| `tools/capture_waypoints.py` | REPL for marking the current G1 pose under a label | After mapping, walk G1 to each spot you care about |
-| `tools/goto_waypoint.py` | REPL for sending G1 to one waypoint at a time, with achieved-vs-goal error reporting and an append-only CSV history | "Send G1 to kitchen and look at the result"; ad-hoc inspection |
-| `tools/navigate_batch.py` | Batch script — visits a list of labels × N rounds, writes a markdown accuracy report | Statistical accuracy testing across many waypoints |
-
-All three tools:
-
-- Read/write a single YAML file (`waypoints.yaml` by default)
-- Use **labels** as identifiers — pick any string matching
-  `[A-Za-z][A-Za-z0-9_-]*` (e.g. `kitchen`, `door1`, `lab_corner_3`)
-- No fixed count of waypoints — capture as many as you want, repeat
-  labels overwrite, name doesn't have to start with `wp`
-- Self-source ROS env + RMW config; `docker exec` invocation is one line
-- Probe `map→body` TF and (for goto / navigate_batch) the
-  `/navigate_to_pose` action server at startup, with explicit
-  `is launch.sh running?` / `is nav2_launch.sh running?` hints on
-  timeout
-
-### Where the tools live (no docker cp needed)
-
-The Gotop tools are at `tools/gotop/` in this repo. The brake
-wrappers (`soft_stop.sh`, `estop.sh`) are at the top of `tools/`.
-Because the repo is bind-mounted into the container at
-`/g1_3d_nav_ros2/`, every tool is immediately invocable as
-`/g1_3d_nav_ros2/tools/gotop/<name>` (or
-`/g1_3d_nav_ros2/tools/<brake>` for the brakes). After `git pull`
-on the host, new versions are available inside the container with
-no `docker cp`.
-
-### Capturing waypoints
-
-Need: `launch.sh` running. (`nav2_launch.sh` not required for capture.)
+`/tmp/nav2.log` 大量 `Invalid frame ID "base_footprint"`，RViz2 看到 goal
+acks 但没 plan polyline、G1 不动。修法：
 
 ```bash
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/capture.sh
+[G1] docker stop 3d_nav_ros2 && docker start 3d_nav_ros2
+# 然后重 launch.sh + nav2_launch.sh
 ```
 
-The wrapper sources ROS env, points the underlying python at the
-default yaml `/g1_3d_nav_ros2/data/waypoints.yaml` (persistent —
-survives container stop/start because `/g1_3d_nav_ros2/data/` is
-the bind-mounted host repo working tree). Override with
-`env WAYPOINTS_YAML=/some/path.yaml ...` if you need a separate
-captures file.
+详见 Roadmap R-009（D-009 fork mount overlay 行为问题）。
 
-You'll see:
+---
 
-```
-Checking map->body TF stream... OK
+## Waypoint testing — Gotop
 
-Loaded N existing waypoints from /g1_3d_nav_ros2/data/waypoints.yaml:
-  kitchen          x=  1.230  y=  4.560  yaw=  90.0deg
-  door1            x=  7.890  y=  1.010  yaw=   0.0deg
-  ...
+跑 nav 后做"开 G1 到指定位置 → 看 nav2 真把它送到没"。三个工具，全在
+`tools/gotop/`：
 
-Commands at prompt:
-  <label>            capture current pose under that label
-  list / ls          show all captured waypoints
-  del <label>        delete a waypoint
-  rename <old> <new> rename a waypoint (group refs updated too)
-  q / quit           save and exit (Ctrl-D works too)
-```
+| 工具 | 用途 |
+|---|---|
+| `capture.sh` | 标记当前 G1 位姿到 yaml |
+| `goto.sh`    | 单点导航到指定 label，输出误差 |
+| `batch.sh`   | 批量跑多 label × 多轮，输出 markdown 报告 |
 
-Then:
+label 格式 `[A-Za-z][A-Za-z0-9_-]*`：`kitchen` / `door1` / `lab_corner_3`。
+yaml 持久化在 `/g1_3d_nav_ros2/data/waypoints.yaml`（host 同步可见）。
 
-1. Use the RC controller to drive G1 to where you want a waypoint
-2. Wait for G1 to stand still (sport-mode micro-jitter takes ~1 second
-   to settle)
-3. At the prompt type a label and press Enter
-4. The script samples the `map→body` transform at 30 Hz for 1 second,
-   averages it, writes the entry to the YAML
-5. Repeat. Type `q` when done.
+### 1. 点位获取（capture）
 
-The YAML is rewritten after **every** capture, so Ctrl-C never loses
-prior data. Restarting `capture_waypoints.py` against the same YAML
-loads existing waypoints and lets you keep adding — incremental
-sessions are fully supported.
-
-#### Re-capturing an existing label
-
-Type the same label again — the script samples a fresh pose, then:
-
-- If the new pose is **within 30 cm** of the old one → silent refresh
-  (small drift is expected, no point asking)
-- If the new pose is **more than 30 cm** away → confirmation prompt:
-
-  ```
-  'kitchen' exists at (1.23, 4.56); new is (5.20, 1.40), 4.45m away.
-  Overwrite? (y/N):
-  ```
-
-  Default `N` keeps the old value. Useful safety against typing the
-  wrong label.
-
-#### Optional: groups
-
-YAML can carry a `groups:` section that `navigate_batch.py` understands
-via `@groupname` tokens. Hand-edit the YAML to add it:
-
-```yaml
-frame_id: map
-waypoints:
-  kitchen:      {x: 1.23, ...}
-  kitchen_door: {x: 1.50, ...}
-  lab_corner:   {x: 5.00, ...}
-groups:
-  kitchen_zone: [kitchen, kitchen_door]
-  lab:          [lab_corner]
-```
-
-`capture_waypoints.py` preserves the `groups:` section on save and
-keeps it consistent on `del` / `rename` — so you can edit groups
-once and the capture tool won't clobber them.
-
-### Driving G1 to a single waypoint (interactive)
-
-Need: `launch.sh` **and** `nav2_launch.sh` running, plus a `waypoints.yaml`.
-Operator on site, RC controller in hand (D-011 safety preconditions).
+需要 `launch.sh` 跑着（不需要 nav2_launch.sh）。
 
 ```bash
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/goto.sh
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/capture.sh
 ```
 
-The wrapper points the script at the default yaml
-`/g1_3d_nav_ros2/data/waypoints.yaml` and the default CSV history
-`/g1_3d_nav_ros2/data/goto_history.csv`. Both persist across container
-stop/start. Override via `WAYPOINTS_YAML=/some/path.yaml ...` or by
-appending `--csv /some/path.csv` to the command.
-
-Prompt:
+REPL 命令：
 
 ```
-goto> kit<TAB>             ← tab completion on labels
-goto> kitchen              ← G1 walks; nav2 status + xy/yaw error printed
-goto> list                 ← list all available labels
-goto> q                    ← exit cleanly
-goto> q!                   ← cancel current motion (zero-vel) + exit
-^C                          ← while G1 is moving = same as q!
+> kitchen              ← RC 走 G1 到目标位置，等站稳，输入 label
+> door1                ← 走到下一个，再标
+> list                 ← 看已存的所有点
+> del kitchen          ← 删一个
+> rename kitchen cafe  ← 改名
+> q                    ← 保存退出（Ctrl-D 也行）
 ```
 
-What the **soft stop** (Ctrl-C / `q!`) actually does, in order:
+每输入 label 立即写盘，Ctrl+C 不丢数据。同名 label 重复输入：< 30 cm 静默
+更新；> 30 cm 弹确认（防误输）。
 
-1. Cancel the in-flight `/navigate_to_pose` goal — nav2 stops
-   publishing `/cmd_vel_nav`
-2. `twist_mux` 0.2 s timeout falls back to `/cmd_vel_zero` (priority 1,
-   the zero_vel_publisher's 0 Twist)
-3. `g1_write_node` receives the 0 Twist, calls SDK `Move(0, 0, 0)`
-4. **G1 stops in place, still standing in sport mode**
+### 2. 点位导航（goto）
 
-Crucially: **no FSM transition, no squat**. To recover G1 stays
-standing and is immediately ready for the next goal — that's the
-point of the soft stop, vs `estop.sh` which fail-passively squats G1.
+需要 `launch.sh` + `nav2_launch.sh` 都在跑。**操作员在场、RC 在手**。
 
-#### CSV history (automatic)
+```bash
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/goto.sh
+```
 
-Every segment, success or failure, appends a row to
-`/g1_3d_nav_ros2/data/goto_history.csv`:
+REPL：
+
+```
+goto> kit<TAB>     ← Tab 自动补全 label
+goto> kitchen      ← G1 walk；结束输出 nav2 status + xy_err / yaw_err
+goto> list         ← 列所有 label
+goto> q            ← 干净退出
+goto> q!           ← 立即软停 + 退出
+^C                  ← 走的时候按 = 同 q!
+```
+
+每段（成功 / 失败）追加一行到 `/g1_3d_nav_ros2/data/goto_history.csv`：
 
 ```csv
 timestamp,label,goal_x,goal_y,goal_yaw_deg,nav2_status,duration_s,reached_x,reached_y,reached_yaw_deg,xy_err_m,yaw_err_deg
 2026-05-26T10:30:15,kitchen,1.2300,4.5600,90.00,SUCCEEDED,12.30,1.2400,4.5500,89.50,0.0141,-0.50
-2026-05-26T10:32:01,door1,7.8900,1.0100,0.00,USER_CANCELED,5.20,,,,,
 ```
 
-Override path with `--csv /custom/path.csv`. The file is
-append-only, so multiple sessions accumulate naturally; if you want
-a fresh history just `rm` the file first.
+### 3. 点位精度（batch）
 
-### Batch accuracy testing (statistical)
-
-Need: `launch.sh` + `nav2_launch.sh` running, plus `waypoints.yaml`.
-Operator on site, ready to answer `physical_sanity (y/n/skip)` after
-each segment.
+批量 + markdown 报告。每段问 `physical_sanity (y/n/skip)`（防 nav2 报
+SUCCEEDED 但定位漂的 case）。
 
 ```bash
-# everything in the yaml × 3 rounds, randomise order each round
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
-    --all --rounds 3 --shuffle
+# yaml 里所有 × 3 轮，每轮顺序随机
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
+        --all --rounds 3 --shuffle
 
-# specific labels
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
-    --labels kitchen,door1,lab_corner --rounds 3
+# 指定 label
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
+        --labels kitchen,door1,lab_corner --rounds 3
 
-# by group (yaml has a groups: section)
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
-    --labels @kitchen_zone --rounds 3
-
-# mix labels and groups (auto-deduped)
-docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
-    --labels @kitchen_zone,@lab,door1 --rounds 3 --shuffle
+# 按 group（yaml 里手编 groups: 段）
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
+        --labels @kitchen_zone --rounds 3
 ```
 
-The wrapper points the script at default yaml
-`/g1_3d_nav_ros2/data/waypoints.yaml` and writes the report to
-`/g1_3d_nav_ros2/data/batch_report.md` (each run overwrites — copy
-to a dated name if you want to keep history).
+输出 markdown 报告 `/g1_3d_nav_ros2/data/batch_report.md`：
 
-The script writes a markdown report at `/g1_3d_nav_ros2/data/batch_report.md` with:
+- 每段一行：round / label / goal pose / reached pose / xy_err / yaw_err /
+  duration / nav2 status / sanity
+- 每个 label 汇总：成功率、xy_err 平均±std、yaw_err 平均±std
 
-- one row per segment: round, label, goal pose, reached pose,
-  xy_err, yaw_err, duration, nav2 status, sanity
-- per-label summary: success rate, mean ± std xy_err, mean ± std
-  yaw_err across all rounds
+每次 batch **覆盖**这个文件；要保留先改名 `cp batch_report.md
+batch_$(date +%F).md`。
 
-Override the report path with `--output /custom/report.md`.
+### Waypoint 测试时的刹车
 
-### Brakes — when goto / batch is running
+| 操作 | 效果 |
+|---|---|
+| Ctrl+C 在 goto/batch 终端 | 软停（取消 goal、零速、G1 站立、脚本退出） |
+| 另一终端跑 `tools/nav/soft_stop.sh` | 同软停，但不退出 goto/batch 脚本 |
+| `tools/estop.sh` | 紧急停 + 蹲下 |
+| RC L2+B | 硬件刹车，独立于 ROS |
 
-If you need to stop G1 while a script is running:
+---
 
-| Way | Effect | When |
+## Appendix
+
+### Why mapping_launch.sh is separate
+
+`tools/nav/launch.sh` 跑 6 节点（fast_lio + open3d_loc + map_server +
+pcl2laserscan + zenoh + lidar），后三个加载 *现有* `scans.pcd` /
+`accumulated_grid.pgm`。建图时这反而有害：
+
+- `open3d_loc` ICP 配准旧 scans.pcd → G1 走出旧地图覆盖时 fitness=0、漂移
+  污染 fast_lio odom
+- `map_server` 发旧 `/map_2d` → 订阅方看错环境
+- `pointcloud_to_laserscan` 为 nav2 local costmap，跟 mapping 无关
+
+`tools/mapping/mapping_launch.sh` 只跑 4 节点：rmw_zenohd + LiDAR + fast_lio
+(mapping mode) + grid_accumulator。是 ROS 1 三终端建图（livox + fast_lio +
+ground_cloud_accumulator）的 ROS 2 一键等价。
+
+### Network host management
+
+仓库里 G1 IP 字面值出现 ~22 处，刻意不用模板 var（操作员复制粘贴优先）。
+换站点：
+
+```bash
+[host] bash tools/rename_host.sh <NEW_IP>          # 重写所有引用
+[host] git diff                                    # review
+[host] git commit -am "rename G1 host: <OLD> -> <NEW>"
+
+# 预览不动文件
+[host] bash tools/rename_host.sh --dry-run <NEW_IP>
+```
+
+`configs/g1_host.txt` 是单一 source of truth（无 runtime 进程读它，纯给
+`rename_host.sh` 当参照）。脚本排除 `docs/TEST_REPORTS/**`、README 顶部
+`> Status:` 行、`configs/g1_host.txt` 自身（最后一步重写）。
+
+### Configuration reference
+
+#### `pointcloud_to_laserscan` parameters
+
+| param | value | rationale |
 |---|---|---|
-| **Ctrl-C** in the goto/batch terminal | Soft stop (cancel goal, zero-vel, G1 standing). Script exits | Most common — "wrong target, change my mind" |
-| **`docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/soft_stop.sh`** in another terminal | Same soft stop, but doesn't exit the goto/batch script | Hands aren't on the goto terminal |
-| **`docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/estop.sh`** | Hard stop + squat (toggle: 2nd call to undo) | Real emergency, G1 about to fall / hit something |
-| **RC controller L2+B** | Hardware brake, independent of ROS | Always-available fallback |
+| `target_frame` | `body` | reproject to robot body for nav |
+| `transform_tolerance` | `0.01` | match ROS 1 |
+| `min_height` | `-1.0` | include floor-level obstacles |
+| `max_height` | `0.15` | ignore overhead clutter |
+| `angle_min` / `max` | `±π` | full 360° |
+| `angle_increment` | `0.007` | ~0.4° resolution |
+| `range_min` / `max` | `0.2` / `100` | full LiDAR range |
+| `use_inf` | `true` | mark out-of-range as inf for Nav2 |
+| `inf_epsilon` | `1.0` | inf substitution |
 
-The two scripted brakes are documented in detail in the
-"Two in-stack brakes" subsection of "Daily operation" above.
+#### `fast_lio` `mid360.yaml`
 
-## Verification
-
-### Container-internal sanity
-
-```bash
-docker exec -it 3d_nav_ros2 bash
-source /opt/ros/humble/setup.bash
-source /root/3d_nav_g1/g1_ws/install/setup.bash
-export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-export ZENOH_CONFIG_OVERRIDE='mode="client";connect/endpoints=["tcp/127.0.0.1:7448"]'
-
-# Topic rates
-for t in /Odometry_loc /localization_3d /map_2d /tf /scan; do
-    rate=$(timeout 4 ros2 topic hz $t 2>&1 | grep -oP "average rate: \K[0-9.]+" | head -1)
-    echo "  $t: ${rate:-NO_DATA} Hz"
-done
-# Expect: ~10 Hz on each odom/loc/scan; /map_2d is latched
-```
-
-### Cross-host (Leo) sanity
-
-```bash
-ros2 topic list                                      # should see /map /map_2d /scan /tf /Odometry_loc /localization_3d
-ros2 topic echo /scan --once | head -5               # LaserScan, frame_id=body
-ros2 run tf2_ros tf2_echo map body                   # metric translation, not km-scale
-ros2 topic info -v /map | grep Durability            # should show TRANSIENT_LOCAL
-```
-
-## Building from source (only if image is unavailable)
-
-The build process is documented separately because it requires Open3D 0.14.1
-binaries that are not in this git repo. See
-`3d_nav_g1/deps/open3d141/README.md` for how to obtain Open3D libs.
-
-Once `3d_nav_g1/deps/open3d141/lib/*.a` are present:
-
-```bash
-cd 3d_nav_g1/livox_ws && colcon build --symlink-install
-cd ../g1_ws && source ../livox_ws/install/setup.bash
-colcon build --symlink-install
-```
-
-For most users: just use the pre-built `g1_nav_final:latest` image. This repo
-documents the configuration, not the build pipeline.
-
-## Configuration reference
-
-### `pointcloud_to_laserscan` parameters in `launch.sh`
-
-These mirror ROS 1's `point_to_scan.launch` one-for-one:
-
-| param                  | value         | rationale                                    |
-|------------------------|---------------|----------------------------------------------|
-| `target_frame`         | `body`        | reproject to robot body for nav              |
-| `transform_tolerance`  | `0.01`        | match ROS 1                                  |
-| `min_height`           | `-1.0`        | include floor-level obstacles                |
-| `max_height`           | `0.15`        | ignore overhead clutter                      |
-| `angle_min` / `max`    | `±π`          | full 360°                                    |
-| `angle_increment`      | `0.007`       | ~0.4° resolution                             |
-| `range_min` / `max`    | `0.2` / `100` | full LiDAR range                             |
-| `use_inf`              | `true`        | mark out-of-range as inf for Nav2            |
-| `inf_epsilon`          | `1.0`         | inf substitution                             |
-
-### `fast_lio` `mid360.yaml` — must-have entries
-
-- `common.lid_topic: "/livox/lidar"` — must match livox_ros_driver2's actual
-  topic name. `/livox/custom_msg` does NOT work (fast_lio hangs at
-  "Node init finished").
+- `common.lid_topic: "/livox/lidar"` — 必须匹配 livox_ros_driver2 实际
+  topic 名。`/livox/custom_msg` 不工作（fast_lio 卡 "Node init finished"）
 - `common.imu_topic: "/livox/imu"`
 - `mapping.extrinsic_T: [-0.011, -0.02329, 0.04412]`
 - `mapping.extrinsic_R: identity`
-- `mapping.extrinsic_est_en: true` — leave true; setting false on this image
-  hangs the binary at init (root cause not yet identified).
+- `mapping.extrinsic_est_en: false` — D-002 follow-through，固定外参防 EKF 漂移
 
-### `open3d_loc` `loc_param_g1.yaml` — Kalman parameter naming
+#### `open3d_loc` `loc_param_g1.yaml` Kalman keys
 
-Use **slash-style** keys (`kf_baselink2map/x: [...]`). Nested YAML
-(`kf_baselink2map: { x: [...] }`) is silently ignored by the C++ side because
-`declare_parameter` uses the literal slash form.
+用 **slash-style** keys (`kf_baselink2map/x: [...]`)。嵌套 YAML
+(`kf_baselink2map: { x: [...] }`) 会被 C++ 静默忽略，因为 `declare_parameter`
+用字面 slash 形式。
 
-### `/map` publisher QoS
+#### `/map` publisher QoS
 
-`global_localization_node` publishes `/map` with `KeepLast(1) +
-TRANSIENT_LOCAL + RELIABLE`. Enables late-joining RViz2 to receive the latched
-PCD. Default ROS 2 publishers are VOLATILE; ROS 1 latched semantics are NOT
-the default. See `patches/README.md`.
+`global_localization_node` 发 `/map` 用 `KeepLast(1) + TRANSIENT_LOCAL +
+RELIABLE`。让晚到的 RViz2 拿到 latched PCD。ROS 2 默认 publisher 是 VOLATILE，
+跟 ROS 1 latched 语义不一样。详 `patches/README.md`。
 
-## Known issues
+#### `accumulated_grid.yaml` thresholds (load-bearing)
 
-| issue                                  | impact                                     | workaround                                       |
-|----------------------------------------|--------------------------------------------|--------------------------------------------------|
-| `extrinsic_est_en: false` hangs binary | can't use ROS 1's value                    | leave `true`, manually set initial pose          |
-| `ros2 cli` intermittent context error  | `topic hz` etc. sometimes errors out       | `ros2 daemon stop && ros2 daemon start`          |
-| `<defunct>` zombies in container       | cosmetic only                              | `docker restart 3d_nav_ros2` to reap             |
-| RViz2 `tf_static TypeHashNotSupported` | log noise from rmw_zenoh_cpp 0.1.8         | ignore — actual transforms work fine             |
+`free_thresh: 0.196` + `mode: trinary` —— grid_accumulator 把 UNKNOWN cell
+编码为 PGM 像素值 205，map_server 转换概率 `(255-205)/255 = 0.196`。若用
+nav2 默认 `free_thresh: 0.25`，UNKNOWN cell 全部被误判 FREE → planner 路过
+墙壁。`mapping_save.sh` 已 pin `--free 0.196 --occ 0.65 --mode trinary`。
 
-## Versioning
+### Known issues
+
+| issue | impact | workaround |
+|---|---|---|
+| `ros2 cli` 偶发 context error | `topic hz` 等偶尔报错 | `ros2 daemon stop && ros2 daemon start` |
+| `<defunct>` 僵尸进程 | 仅观感 | `docker restart 3d_nav_ros2` reap |
+| RViz2 `tf_static TypeHashNotSupported` | 日志噪音（rmw_zenoh_cpp 0.1.8） | 忽略，TF 实际工作 |
+
+### Versioning
+
+- **2026-05-28** — operator-workstation toolchain + ros_map_edit map editor
+  + threshold / PGM-row-flip bug fixes. Image:
+  `docker.io/zwterzt/g1_3d_nav_ros2:latest` SHA `137a5b46be62...`（从 GCR
+  迁到 Docker Hub）。Includes: `tools/` split into `nav/` + `host_side/`;
+  ros_map_edit 操作员端 Docker 镜像（i18n + `/rviz/map_file` rosparam
+  fallback patches); `mapping_save.sh` pin `free_thresh=0.196 mode=trinary`
+  (修 UNKNOWN 误判 FREE); `ros_map_edit::savePGM` Y-flip fix (PGM 行序
+  vs OccupancyGrid `data[0]=Y_min` 不一致)。
 
 - **2026-05-25** — initial public release. Image: `g1_nav_final:latest`
-  SHA `183e0426c630...`. Includes: open3d_loc PCD-path fix + `/scan` remap +
-  `/map` QoS = TRANSIENT_LOCAL; launch.sh P3 (RMW=zenoh) refactor;
+  SHA `183e0426c630...`. Includes: open3d_loc PCD-path fix + `/scan` remap
+  + `/map` QoS = TRANSIENT_LOCAL; launch.sh P3 (RMW=zenoh) refactor;
   pcl2laserscan ROS 1 parity; mid360.yaml `lid_topic` correction.
 
-## License
+### License
 
-Configurations and scripts: same as upstream — Apache 2.0 / BSD per individual
-file. This repo aggregates configurations and patches against deepglint's
-open3d_loc and FAST_LIO; consult those projects for their respective licenses.
+Configurations and scripts: same as upstream — Apache 2.0 / BSD per
+individual file. This repo aggregates configurations and patches against
+deepglint's open3d_loc and FAST_LIO; consult those projects for their
+respective licenses.
+
