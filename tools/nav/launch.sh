@@ -93,7 +93,7 @@ ros2 run pointcloud_to_laserscan pointcloud_to_laserscan_node --ros-args \
     -r __node:=pcl2scan \
     -p target_frame:=body \
     -p transform_tolerance:=0.01 \
-    -p min_height:=-1.0 -p max_height:=0.15 \
+    -p min_height:=-1.35 -p max_height:=0.15 \
     -p angle_min:=-3.1415926 -p angle_max:=3.1415926 -p angle_increment:=0.007 \
     -p scan_time:=0.1 \
     -p range_min:=0.2 -p range_max:=100.0 \
