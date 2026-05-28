@@ -1,4 +1,4 @@
-# g1_3d_nav_ros
+# g1_3d_nav_ros2
 
 > Status: 2026-05-25 — verified end-to-end on G1 (xxx.xxx.xxx.xxx) with
 > cross-host RViz2 from host (xxx.xxx.xxx.xxx). Image:
@@ -291,9 +291,6 @@ the canon repo working tree):
 - `accumulated_grid.pgm` + `.yaml` — 2D occupancy grid, used by nav2's
   static layer
 
-`mapping_save.sh` also writes `.bak` siblings of the previous maps for
-one-step rollback.
-
 ### Prerequisites
 
 - The `3d_nav_ros2` container exists and uses the new mount layout
@@ -404,26 +401,24 @@ docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_save.sh
 Expected output:
 
 ```
-[1/5] dumping 3D PCD via fast_lio /map_save...
-  ... success: True
-  found new PCD at /root/test.pcd
-[2/5] dumping 2D PGM via map_saver_cli...
-  ... [INFO]: Map saved successfully
-[3/5] backing up previous maps to .bak...
-[4/5] moving new maps into /g1_3d_nav_ros2/maps/ ...
-[5/5] fixing yaml image path...
+[1/3] dumping 3D PCD via fast_lio /map_save ...
+  ok: /g1_3d_nav_ros2/maps/scans.pcd (2382777 bytes)
+[2/3] dumping 2D PGM via map_saver_cli ...
+  ok: /g1_3d_nav_ros2/maps/accumulated_grid.pgm + /g1_3d_nav_ros2/maps/accumulated_grid.yaml
+[3/3] fixing yaml image path ...
 
-DONE. New map files in /g1_3d_nav_ros2/maps/ :
-  -rw-r--r-- 1 root root 258123456 ... scans.pcd
-  -rw-r--r-- 1 root root   1234567 ... accumulated_grid.pgm
-  -rw-r--r-- 1 root root       154 ... accumulated_grid.yaml
-
-Next:
-  1. Ctrl+C the mapping_launch.sh terminal
-  2. Start the navigation stack so open3d_loc loads the new PCD:
-       docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/launch.sh
-  3. Verify ICP fitness >= 0.7
+DONE. Files in /g1_3d_nav_ros2/maps/ :
+ -rw-rw-r-- 1 1000 1000 2382777 ... scans.pcd
+ -rw-rw-r-- 1 1000 1000 1175546 ... accumulated_grid.pgm
+ -rw-rw-r-- 1 1000 1000     124 ... accumulated_grid.yaml
 ```
+
+After it returns:
+
+1. Ctrl+C the `mapping_launch.sh` terminal.
+2. Start the navigation stack so `open3d_loc` loads the new PCD:
+   `docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/launch.sh`
+3. Verify ICP fitness >= 0.7.
 
 If you don't see "DONE." or any step says FAIL, **don't switch to
 the navigation stack yet** — your old map is still in place and
