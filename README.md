@@ -1,12 +1,7 @@
-# g1_3d_nav_ros2
+# g1_3d_nav_ros
 
-ROS 2 Humble native 3D localization runtime for the Unitree G1 Edu humanoid
-robot. Replaces the ROS 1 + ros1_bridge path with a single-RMW
-(`rmw_zenoh_cpp`) deployment.
-
-> Status: 2026-05-25 — verified end-to-end on G1 (192.168.100.30) with
-> cross-host RViz2 from Leo (192.168.100.13). Image:
-> `g1_nav_final:latest` SHA `183e0426c630...`.
+> Status: 2026-05-25 — verified end-to-end on G1 (xxx.xxx.xxx.xxx) with
+> cross-host RViz2 from Host (xxx.xxx.xxx.xxx). Image:
 
 ## What this repo holds
 
@@ -15,20 +10,15 @@ robot. Replaces the ROS 1 + ros1_bridge path with a single-RMW
 - **`3d_nav_g1/livox_ws/src/`** — Livox MID360 ROS 2 driver source
 - **`3d_nav_g1/deps/open3d141/`** — Open3D 0.14.1 headers + CMake config
   (binary libs separate, see `3d_nav_g1/deps/open3d141/README.md`)
-- **`launch.sh`** — 6-step runtime entry script
+- **`tools`** — tools for quick start mapping nav2 map_edit rviz2
 - **`maps/`** — 2D occupancy grid (3D PCD is build product, not in git — see
   `maps/README.md`)
-- **`configs/`** — Leo-side RViz2 config
-- **`config/`**, **`patches/`**, **`docs/`** — extra documentation set
-  (consolidated configs, C++ patch notes, design decisions, glossary)
-
-The full set of patches in this repo is what makes the stack work — see
-`docs/DECISIONS.md` for the 7 architecturally significant decisions.
+- **`configs/`** — Host-side RViz2 config 
 
 ## Runtime topology
 
 ```
-G1 (192.168.100.30)                         Leo (192.168.100.13)
+G1 (xxx.xxx.xxx.xxx)                         host (xxx.xxx.xxx.xxx)
 ┌─ 3d_nav_ros2 container ──────────────┐    ┌─ host install ─┐
 │ image: g1_nav_final:latest           │    │ rmw_zenoh_cpp  │
 │ net=host, ipc=host                   │    │ rviz2          │
@@ -51,7 +41,7 @@ router across the network. No DDS bridge, no ros1_bridge.
 
 Throughout this README, in `tools/launch.sh`, and in side READMEs (`maps/`,
 `data/`, `botbrain/`), the G1 robot's IP appears as the literal string
-`192.168.100.30` — roughly 22 occurrences in operator-facing commands.
+`xxx.xxx.xxx.xxx` — roughly 22 occurrences in operator-facing commands.
 The literal is intentional: copy-paste readiness beats template variables
 when an operator is debugging on G1 directly. The cost is that when the
 team moves to a new debugging site and the G1 IP changes, all 22 places
@@ -88,7 +78,7 @@ host file as the last step.
 | Excluded | Why |
 |---|---|
 | `docs/TEST_REPORTS/**` | Historical evidence — these reports record runs at past sites. The IP belongs to the evidence, not the configuration. |
-| `README.md` `> Status:` line | Same — the line asserts "verified end-to-end on G1 (192.168.100.30)" on a specific date and SHA. |
+| `README.md` `> Status:` line | Same — the line asserts "verified end-to-end on G1 (<G1 ip>)" on a specific date and SHA. |
 | `configs/g1_host.txt` itself | Rewritten as the last step. |
 
 If `tools/rename_host.sh` aborts with *"old IP appears nowhere else in
@@ -99,7 +89,7 @@ edited one side without the other). Investigate before forcing a rewrite.
 
 ### Prerequisites (one-off)
 
-**On G1 (`192.168.100.30`):**
+**On G1 :**
 
 1. Pull the Docker image:
    ```bash
@@ -116,7 +106,7 @@ edited one side without the other). Investigate before forcing a rewrite.
        g1_nav_final:latest sleep infinity
    ```
 
-**On your device (`xx.xx.xx.xx`):**
+**On your device :**
 
 ```bash
 sudo apt install ros-humble-rmw-zenoh-cpp ros-humble-rviz2
@@ -126,21 +116,21 @@ sudo apt install ros-humble-rmw-zenoh-cpp ros-humble-rviz2
 
 ```bash
 # 1. G1: stop ROS 1 path containers (if running)
-ssh unitree@192.168.100.30 'docker stop -t 2 g1_loc_ros1 g1_bridge 2>/dev/null' 
+ssh unitree@<G1 ip> 'docker stop -t 2 g1_loc_ros1 g1_bridge 2>/dev/null' 
 
 # 2. G1: start the runtime container (if it was stopped)
-ssh unitree@192.168.100.30 'docker start 3d_nav_ros2'
+ssh unitree@<G1 ip> 'docker start 3d_nav_ros2'
 
 # 3. G1: launch the 6-step stack inside the container
-ssh unitree@192.168.100.30 \
+ssh unitree@<G1 ip>\
   'docker exec -d 3d_nav_ros2 bash -c "cd /root && bash launch.sh > /tmp/launch.log 2>&1"'
 
 # 4. Wait ~90 s, then verify all 6 steps OK:
-ssh unitree@192.168.100.30 'docker exec 3d_nav_ros2 tail -15 /tmp/launch.log'
+ssh unitree@<G1 ip> 'docker exec 3d_nav_ros2 tail -15 /tmp/launch.log'
 
-# 5. Leo: launch RViz2 connected to the G1 Zenoh router
+# 5. Host: launch RViz2 connected to the G1 Zenoh router
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-export ZENOH_CONFIG_OVERRIDE='mode="client";connect/endpoints=["tcp/192.168.100.30:7448"]'
+export ZENOH_CONFIG_OVERRIDE='mode="client";connect/endpoints=["tcp/<G1 ip>:7448<port>"]'#use your G1 ip and port.
 export ZENOH_ROUTER_CHECK_ATTEMPTS=10
 ros2 daemon stop && ros2 daemon start && sleep 4
 rviz2 -d configs/g1_track0_rviz2.rviz
@@ -170,12 +160,12 @@ Pose` → planner → controller → twist_mux → `g1_write_node` → SDK
 
 ```bash
 # Window A — localization (holds session, Ctrl+C to stop)
-ssh unitree@192.168.100.30
+ssh unitree@<G1 ip>
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/launch.sh
 # wait for "=== ALL 6 NODES RUNNING ==="
 
 # Window B — Nav2 + twist_mux + g1_write_node (holds session)
-ssh unitree@192.168.100.30
+ssh unitree@<G1 ip>
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav2_launch.sh
 # wait for "=== STACK READY: G1 motion ENABLED ==="
 
@@ -269,7 +259,7 @@ one-step rollback.
   If you're migrating from the old `/home/unitree/g1_3d_nav/maps`
   mount or from the older `/root/maps` layout, do this once:
   ```bash
-  ssh unitree@192.168.100.30
+  ssh unitree@<G1 ip>
   cp /home/unitree/g1_3d_nav/maps/scans.pcd \
      /home/unitree/g1_3d_nav_ros2_repo/maps/scans.pcd
   cd /home/unitree/g1_3d_nav_ros2_repo && git pull
@@ -318,7 +308,7 @@ Equivalent to ROS1's three-terminal mapping flow
 
 ```bash
 # window A — hold this session open the whole time
-ssh unitree@192.168.100.30
+ssh unitree@<G1 ip>
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_launch.sh
 bash /home/leo/g1_3d_nav_deploy/configs/mapping_rviz2.sh
 ```
@@ -365,7 +355,7 @@ This makes the post-map-restart alignment trivial.
 
 ```bash
 # window B
-ssh unitree@192.168.100.30
+ssh unitree@<G1 ip>
 docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/mapping/mapping_save.sh
 ```
 
@@ -412,7 +402,7 @@ for the new maps to take effect.
 ### Step 5 — verify ICP fitness ≥ 0.7
 
 ```bash
-ssh unitree@192.168.100.30 \
+ssh unitree@<G1 ip> \
   'docker exec 3d_nav_ros2 tail -50 /tmp/loc.log | grep fitness | tail -10'
 ```
 
@@ -447,8 +437,8 @@ the change in git:
 ```bash
 # Leo side
 cd <your canon clone>
-ssh unitree@192.168.100.30 'cat /home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.pgm'  > maps/accumulated_grid.pgm
-ssh unitree@192.168.100.30 'cat /home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.yaml' > maps/accumulated_grid.yaml
+ssh unitree@<G1 ip> 'cat /home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.pgm'  > maps/accumulated_grid.pgm
+ssh unitree@<G1 ip> 'cat /home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.yaml' > maps/accumulated_grid.yaml
 git add maps/accumulated_grid.* && git commit -m "maps: re-mapped <date>" && git push
 ```
 
