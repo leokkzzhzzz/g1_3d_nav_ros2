@@ -269,7 +269,7 @@ End-to-end goal-driven motion verified 2026-05-26: RViz2 `2D Goal Pose` →
 planner → controller → twist_mux → `g1_write_node` → SDK `LocoClient::Move()`
 → G1 walks.
 
-### 启动顺序（3 个终端）
+### 启动顺序（4 个终端）
 
 ```bash
 # Window A — G1：定位栈（6 节点）
@@ -285,6 +285,10 @@ planner → controller → twist_mux → `g1_write_node` → SDK `LocoClient::Mo
 # Window C — workstation：RViz2
 [host] cd <repo>
 [host] bash tools/host_side/g1_nav_loc_rviz2.sh
+
+# Window D - stop_robot
+[G1] ssh unitree@<G1 ip>
+[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/soft_stop.sh
 ```
 
 ### 第一次必做：在 RViz2 设初始 pose
