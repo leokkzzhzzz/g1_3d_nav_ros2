@@ -33,8 +33,8 @@
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.10
-      yaw_goal_tolerance: 0.15
+      xy_goal_tolerance: 0.2
+      yaw_goal_tolerance: 0.3
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 56
@@ -42,19 +42,19 @@
       batch_size: 2000
       ax_max: 0.4
       ax_min: -0.5
-      ay_max: 0.0
-      ay_min: 0.0
-      az_max: 2.5
+      ay_max: 0
+      ay_min: 0
+      az_max: 1.5
       vx_std: 0.6
-      vy_std: 0.0
+      vy_std: 0.2
       wz_std: 0.6
       vx_max: 0.35
       vx_min: 0.0
-      vy_max: 0.0
-      wz_max: 1.0
+      vy_max: 0
+      wz_max: 0.8
       iteration_count: 1
       prune_distance: 1.7
-      transform_tolerance: 1.0
+      transform_tolerance: 0.1
       temperature: 0.3
       gamma: 0.015
       motion_model: "DiffDrive"
@@ -149,7 +149,7 @@
       resolution: 0.05
 
       footprint: "[[0.175, 0.225], [0.175, -0.225], [-0.175, -0.225], [-0.175, 0.225]]"
-      footprint_padding: 0.02   
+      footprint_padding: 0.03   
 
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
 
@@ -163,20 +163,21 @@
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
-        observation_sources: scan
+        observation_sources: cloud
         footprint_clearing_enabled: true
-        scan:
-          # g1_3d_nav_ros2: pcl2laserscan output (cloud z-filtered to 2D)
-          topic: /scan
-          data_type: "LaserScan"
+        cloud:
+          # Option-3 (2026-05-30): PCD shifted +1.247 z, odom z=0 at ground.
+          # Height filter is in global_frame (map) z, ground == 0.
+          topic: /cloud_registered_body_1
+          data_type: "PointCloud2"
           marking: true
           clearing: true
-          min_obstacle_height: -1.0
-          max_obstacle_height: 1.0
-          obstacle_max_range: 5.0
-          raytrace_max_range: 5.0
+          min_obstacle_height: 0.2
+          max_obstacle_height: 1.30
+          obstacle_max_range: 3.0
+          raytrace_max_range: 3.0
           observation_persistence: 0.0
-          observation_queue_length: 50         
+          observation_queue_length: 50
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -204,20 +205,21 @@
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
-        observation_sources: scan
+        observation_sources: cloud
         footprint_clearing_enabled: true
-        scan:
-          # g1_3d_nav_ros2: pcl2laserscan output (cloud z-filtered to 2D)
-          topic: /scan
-          data_type: "LaserScan"
+        cloud:
+          # Option-3 (2026-05-30): odom z=0 at ground via shifted camera_init2odom static TF.
+          # Height filter is in global_frame (odom) z, ground == 0.
+          topic: /cloud_registered_body_1
+          data_type: "PointCloud2"
           marking: true
           clearing: true
-          min_obstacle_height: -1.0
-          max_obstacle_height: 1.0
-          obstacle_max_range: 5.0
-          raytrace_max_range: 5.0
+          min_obstacle_height: 0.2
+          max_obstacle_height: 1.30
+          obstacle_max_range: 3.0
+          raytrace_max_range: 3.0
           observation_persistence: 0.0
-          observation_queue_length: 50    
+          observation_queue_length: 50
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"

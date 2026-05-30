@@ -27,3 +27,6 @@ __pycache__/
 .vscode/
 .idea/
 *.swp
+
+# Backups (D-012 rollback bundles, host-only)
+backups/

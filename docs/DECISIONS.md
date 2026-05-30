@@ -342,3 +342,107 @@ the fork yaml does not always reach long-lived nav2 processes across
 `nav2_launch.sh` restarts; `docker stop && start` is the working
 workaround.
 
+## D-012: Ground-aligned frames via FAST-LIO `extrinsic_T` z-shift + PCD shift
+
+**Status:** accepted (2026-05-30)
+
+**Context:** Nav2's `ObstacleLayer` filters cloud points by global-frame z
+(`min_obstacle_height` / `max_obstacle_height`). That filter only makes sense
+when the global frame's z=0 sits at ground level. Out of the box, FAST-LIO's
+`body` frame is centred at the IMU (≈ at the LiDAR optical centre); on G1 with
+MID360 mounted on the torso the LiDAR is ~1.247 m above the floor when the
+robot stands in URDF home, so `body`, `camera_init`, `odom`, and `map` all
+settle with z=0 ≈ LiDAR-startup-height — **not** ground.
+
+This produces two failure modes that hid behind the same yaml shape:
+
+1. The pre-D-012 yaml used `pointcloud_to_laserscan` with
+   `target_frame: body, min_height: -1.0, max_height: -0.3`. Read literally,
+   that is "0.247 m to 0.947 m above ground in body frame" — a single
+   knee-to-waist slice, blind to floor obstacles (chair legs, cables) and to
+   anything chest height or above.
+2. Plugging BotBrain's `min_obstacle_height: 0.07 / max_obstacle_height: 1.30`
+   directly into a `global_frame: odom` costmap silently filters **all** real
+   obstacles out, because in this stack `0.07` in odom z corresponds to
+   ~1.32 m above the floor.
+
+The shape that makes both BotBrain's height filter and the G1's physical
+obstacle distribution agree is to bring `body`, `odom`, and `map` all to
+`z=0 = ground`.
+
+**Decision:**
+
+1. Reframe FAST-LIO's `body` frame to coincide with `base_footprint` by setting
+   `extrinsic_T: [-0.011, -0.02329, 1.247]` in
+   `3d_nav_g1/g1_ws/src/deepglint/FAST_LIO/config/mid360.yaml` (was
+   `[-0.011, -0.02329, 0.04412]`). FAST-LIO now treats the IMU as if it sat
+   1.247 m below the LiDAR, so `cloud_registered_body_1` reports floor points
+   at z ≈ 0 in body frame.
+2. Pre-shift the localization PCD `maps/scans.pcd` by `+1.247 m` in z so
+   `map`'s z=0 also coincides with ground.
+3. Set `pcd_save_en: false` in `mid360.yaml` to prevent FAST-LIO from
+   overwriting the shifted PCD on shutdown.
+4. Adopt BotBrain's PointCloud2 obstacle layer in
+   `botbrain/src/g1_pkg/config/nav2_params.yaml`:
+   `observation_sources: cloud`, `topic: /cloud_registered_body_1`,
+   `data_type: PointCloud2`, `min_obstacle_height: 0.07`,
+   `max_obstacle_height: 1.30`, applied to both `local_costmap` and
+   `global_costmap`. The `pointcloud_to_laserscan` node still runs and
+   produces `/scan` for backwards-compatible viewers, but Nav2 no longer
+   consumes it.
+
+The 1.247 m constant is the URDF `base_footprint → mid360_link` z translation
+on G1 with the standard MID360 mount. It is the **ground offset constant** in
+DOMAIN.md.
+
+**Considered alternatives:**
+
+- **A — keep LaserScan, change `target_frame` from `body` to `base_footprint`.**
+  Rejected: `base_footprint` does not exist on the rmw_zenoh_cpp bus that
+  3d_nav_ros2 lives on. The `g1_robot/base_footprint` visible from outside
+  comes from a different container on the host fastdds bus and does not bridge.
+- **B — leave FAST-LIO untouched; shift only the PCD and the static TF
+  `odom → camera_init` to `(0, 0, 1.247)`.** Implemented as an interim probe
+  on 2026-05-30 morning. The math worked for height filtering, but `body`
+  remained centred at the LiDAR while `odom`/`map` floated at ground. RViz2
+  with `Fixed Frame=map` showed the robot floating ~1.247 m above the map
+  cloud — visually disorienting, and any downstream consumer reading
+  `map → body` saw a 1.247 m offset that did not correspond to a physical
+  position. Reverted.
+- **C — patch fast_lio to publish a separate ground-anchored frame (e.g.
+  `base_footprint`) in addition to `body`.** Rejected: out of scope for a
+  runtime configuration change; unnecessary once `extrinsic_T` is repurposed.
+
+**Consequences:**
+
+- BotBrain's `nav2_params.yaml` height filter (`0.07 / 1.30`) plugs in
+  directly with no per-deployment z-offset arithmetic.
+- `body`, `odom`, and `map` share `z=0 = ground` whenever G1 starts in URDF
+  home / standing. Visualisations in RViz2 with `Fixed Frame=map` show the
+  robot at the correct height above the floor cloud.
+- FAST-LIO now operates with a ~1.247 m lever arm between its declared body
+  origin and the physical IMU. Centripetal `ω×(ω×r)` at G1's nominal
+  `wz_max: 0.8 rad/s` is ≈ 0.8 m/s² (≈ 0.08 g). open3d_loc's per-cycle ICP
+  correction overrides this drift; pure-IMU integration during ICP gaps will
+  be slightly noisier than before but stays bounded under normal G1 motion.
+- The shifted PCD is **not** the same artefact as a fresh FAST-LIO mapping
+  output. `pcd_save_en: false` prevents FAST-LIO from clobbering it. Re-running
+  mapping (HongTu pipeline) writes a new PCD that itself must be shifted
+  (`tools/mapping/shift_pcd_z.py`-equivalent) before serving as a localization
+  map.
+- The 1.247 m shift is hardware-specific — it is the URDF
+  `base_footprint → mid360_link` z. If the LiDAR mount changes (different
+  riser, different G1 generation, or a tilt mount), the constant must be
+  re-derived. Recorded in DOMAIN.md as the "ground offset constant".
+
+**Verified (2026-05-30):**
+
+- PCD floor z (1st percentile): `-1.245 → +0.002` after the shift.
+- Live `cloud_registered_body_1` floor z post-restart: ≈ 0 (matches PCD).
+- RViz2 `Fixed Frame=map` shows the robot sitting on the floor cloud, not
+  hovering above it. Operator sign-off 2026-05-30.
+- Backup of pre-change state: `backups/2026-05-30_pre_option3/` with sha256
+  manifest, snapshots of `/tmp/launch_params_*` running params, TF tree
+  snapshot, and one-shot rollback commands.
+
+

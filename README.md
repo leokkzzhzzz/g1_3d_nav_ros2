@@ -1,5 +1,12 @@
 # g1_3d_nav_ros2
 
+> Status: 2026-05-30 — Nav2 obstacle layer reframed onto PointCloud2 with
+> ground-anchored frames (D-012). FAST-LIO's `body` frame, the localization
+> PCD, `odom`, and `map` now share `z=0 = ground`, so BotBrain's `0.07/1.30`
+> height filter is the supported configuration. Pre-2026-05-30 LaserScan
+> obstacle path is documented as the rejected alternative; rollback bundle
+> in `backups/2026-05-30_pre_option3/`.
+>
 > Status: 2026-05-28 — verified end-to-end on G1 with cross-host RViz2 from a
 > workstation. Image: `docker.io/zwterzt/g1_3d_nav_ros2:latest` SHA
 > `137a5b46be62...`.
@@ -113,6 +120,11 @@ host 上做 → 容器内立即生效，无需 `docker cp`。
 
 新场地 → 跳到 [Mapping](#mapping) 自己建。
 有现成 PCD（≥ 1 MB） → 放到 `/home/unitree/g1_3d_nav_ros2_repo/maps/scans.pcd`。
+
+> **D-012 提醒**: 自 2026-05-30 起，PCD 必须以**地面为 z=0**（floor 1pct ≈ 0
+> m）。`tools/mapping/grid_accumulator.py` / HongTu 输出的原始 PCD 是以建图
+> 时刻 LiDAR 位置为 z=0（floor 1pct ≈ -1.247 m），需要先用平移脚本沿 z 加
+> 1.247 m 再用作定位地图。详见 `docs/DECISIONS.md#d-012`。
 
 ---
 

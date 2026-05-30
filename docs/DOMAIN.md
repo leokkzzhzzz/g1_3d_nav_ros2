@@ -18,11 +18,17 @@ LiDAR → FAST-LIO (odometry) → open3d_loc (ICP against pre-built PCD) → TF.
 *Avoid:* depending on ROS 1 containers for runtime localization. Splitting
 odometry and global re-localization across different sources of truth.
 
-## Local obstacle scan
-The `/scan` LaserScan topic produced by `pointcloud_to_laserscan` from
-`/cloud_registered_body_1`. The primary obstacle input for the navigation layer.
-*Avoid:* using raw 3D point clouds as a hard nav dependency, which would block
-closed-loop control on display-completeness.
+## Local obstacle source
+The `/cloud_registered_body_1` PointCloud2 published by FAST-LIO. After D-012
+Nav2's `obstacle_layer` subscribes to it directly with `data_type: PointCloud2`
+and filters ground-relative heights with `min_obstacle_height: 0.07` /
+`max_obstacle_height: 1.30`. The `pointcloud_to_laserscan` node still runs and
+publishes `/scan` for backwards-compatible viewers, but Nav2 no longer consumes
+it.
+*Avoid:* using `/scan` as a Nav2 input on this stack — its
+`target_frame: body, min_height: -1.0, max_height: -0.3` slice is a single
+knee-to-waist plane in body frame and would silently drop floor and chest-level
+obstacles.
 
 ## Cross-host visualization
 The pipeline that exposes ROS 2 graph state from G1 to Leo for RViz2 monitoring,
@@ -57,3 +63,23 @@ For ROS 1 latched topics ported to ROS 2 (notably `/map` for the PCD), the
 publisher must use `rclcpp::QoS(...).transient_local()`. Default ROS 2 publishers
 are volatile and silently drop messages for late-joining subscribers. RViz2 is
 always a late joiner.
+
+## Ground-aligned body frame
+After D-012, FAST-LIO's `body` frame is shifted by `extrinsic_T z = 1.247 m`
+so its z=0 coincides with the floor projection of the IMU rather than with the
+LiDAR optical centre. Together with the `+1.247 m` PCD pre-shift this brings
+`body`, `odom`, and `map` to share `z=0 = ground`, so Nav2 height filters use
+ground-relative numbers directly.
+*Avoid:* treating `body` as the IMU's physical position. After D-012 it is a
+virtual frame at the floor projection of the IMU. Lever-arm rotation effects
+(IMU ≈1.247 m above the body origin) are absorbed by open3d_loc's per-cycle
+ICP correction under normal G1 motion (`wz_max: 0.8 rad/s`).
+
+## Ground offset constant
+The `1.247 m` value used by D-012 in two places:
+`mid360.yaml#mapping.extrinsic_T` and the `tools/mapping/shift_pcd_z.py` PCD
+pre-shift. It is the URDF `base_footprint → mid360_link` z translation on G1
+with the standard MID360 mount. Changing the LiDAR riser, mount tilt, or
+moving to a G1 generation with a different torso height invalidates the
+constant — it must be re-derived from the new URDF before Nav2 height filters
+work correctly.
