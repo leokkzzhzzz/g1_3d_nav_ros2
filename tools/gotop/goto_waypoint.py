@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""Send G1 to a single waypoint by label.
+"""Send G1 to a single waypoint or walk a numbered series by label.
 
 Reads a waypoints YAML file produced by capture_waypoints.py (dict format
 keyed by label). Lists the available labels, then enters an interactive
-loop: type a label, the script sends a NavigateToPose goal there, waits
-for the result, reports the achieved-vs-goal pose error.
+loop:
+
+  goto> office1            # single waypoint, sends one NavigateToPose
+  goto> office[]           # series traversal: office1 -> office2 -> ...
+                           # in numeric order, retrying each up to 3
+                           # times before aborting the whole sequence
+  goto> kitchen            # any non-series label still works as before
+
+Series detection: any label matching `^([A-Za-z][A-Za-z_]*)(\d+)$` is a
+member of the named group. office10 lands after office9 (sorted by
+integer suffix). office_1, dock_a3 are also valid members of office_[]
+and dock_a[].
 
 Use this for ad-hoc inspection of individual waypoints — drive G1 to the
 "kitchen" waypoint, look at it, drive to "door1", look at it. For
@@ -18,13 +28,24 @@ Usage:
       python3 /g1_3d_nav_ros2/tools/gotop/goto_waypoint.py /tmp/waypoints.yaml
     "
 
+Optional flags:
+    --dwell N            seconds to stand at each series waypoint after
+                         arrival before firing the next goal (default 0).
+                         Useful for inspection patrols, sensor reads, or
+                         letting ICP settle between hops.
+    --retries N          per-waypoint retry budget on ABORTED/TIMEOUT
+                         (default 3). After N failures the series aborts.
+
 While G1 is moving, the script blocks on the action result. To preempt,
-run /g1_3d_nav_ros2/tools/soft_stop.sh in a separate window — it cancels the current goal
-and G1 stops in place still standing in sport mode.
+run /g1_3d_nav_ros2/tools/soft_stop.sh in a separate window — it cancels
+the current goal and G1 stops in place still standing in sport mode.
+Inside a series, Ctrl+C cancels the current hop AND aborts the whole
+sequence (returns to the prompt; later hops are not sent).
 
 Built-in commands at the prompt:
   <label>            navigate to that waypoint
-  list / ls          show all available labels
+  <name>[]           walk the entire series in numeric order
+  list / ls          show all available labels (series folded)
   q / quit / exit    quit (Ctrl-D works too)
 """
 import argparse
@@ -69,6 +90,36 @@ GOAL_TIMEOUT_S = 120.0
 TF_STREAM_WAIT_S = 10.0
 ACTION_SERVER_WAIT_S = 15.0
 POLL_PERIOD_S = 0.05
+RETRY_BACKOFF_S = 1.0
+
+# Series detection: prefix is letters/underscores only (no digits or
+# punctuation in prefix), suffix is one or more digits. Sorted by integer
+# value so office10 lands after office9. Mirror of capture_waypoints.py.
+import re as _re
+SERIES_RE = _re.compile(r"^([A-Za-z][A-Za-z_]*)(\d+)$")
+SERIES_BRACKET_RE = _re.compile(r"^([A-Za-z][A-Za-z_]*)\[\]$")
+
+
+def parse_series_member(label):
+    """Return (group, idx_int) if label is a series member, else None."""
+    m = SERIES_RE.match(label)
+    if not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def compute_series(waypoints):
+    """Return {group: [(idx, label), ...]} sorted by idx."""
+    series = {}
+    for label in waypoints:
+        parsed = parse_series_member(label)
+        if parsed is None:
+            continue
+        group, idx = parsed
+        series.setdefault(group, []).append((idx, label))
+    for group in series:
+        series[group].sort(key=lambda t: t[0])
+    return series
 
 
 def quat_to_yaw(qx, qy, qz, qw):
@@ -219,10 +270,23 @@ def print_labels(waypoints):
     if not waypoints:
         print("  (no waypoints in file)")
         return
-    for label in sorted(waypoints.keys()):
+    series = compute_series(waypoints)
+    series_members = {label for entries in series.values() for _, label in entries}
+    singles = sorted(label for label in waypoints if label not in series_members)
+    for label in singles:
         wp = waypoints[label]
         print(f"  {label:<20} x={wp['x']:7.3f}  y={wp['y']:7.3f}  "
               f"yaw={math.degrees(wp['yaw']):6.1f}deg")
+    for group in sorted(series.keys()):
+        entries = series[group]
+        idxs = [i for i, _ in entries]
+        xs = [waypoints[lab]["x"] for _, lab in entries]
+        ys = [waypoints[lab]["y"] for _, lab in entries]
+        idx_str = (f"{group}{idxs[0]}..{group}{idxs[-1]}"
+                   if len(idxs) > 1 and idxs == list(range(idxs[0], idxs[-1] + 1))
+                   else ", ".join(f"{group}{i}" for i in idxs))
+        print(f"  {group + '[]':<20} ({len(entries)} pts) {idx_str}  "
+              f"x∈[{min(xs):.2f},{max(xs):.2f}]  y∈[{min(ys):.2f},{max(ys):.2f}]")
 
 
 def main():
@@ -230,6 +294,12 @@ def main():
     ap.add_argument("waypoints", help="yaml from capture_waypoints.py")
     ap.add_argument("--csv", default="/tmp/goto_history.csv",
                     help="append-only csv log of every visited segment")
+    ap.add_argument("--dwell", type=float, default=0.0,
+                    help="seconds to dwell at each series waypoint after arrival "
+                         "before sending the next goal (default 0)")
+    ap.add_argument("--retries", type=int, default=3,
+                    help="per-waypoint retry budget on ABORTED/TIMEOUT before "
+                         "aborting the series (default 3)")
     args = ap.parse_args()
 
     waypoints = load_yaml(args.waypoints)
@@ -237,9 +307,13 @@ def main():
     print_labels(waypoints)
 
     # Tab-completion on label names. Built-in commands and labels both
-    # complete from a single fixed wordlist.
+    # complete from a single fixed wordlist. Series groups also complete
+    # to `<group>[]`.
     if HAVE_READLINE:
-        completion_words = sorted(waypoints.keys()) + ["list", "ls", "q", "q!", "quit", "exit"]
+        groups_for_complete = sorted(compute_series(waypoints).keys())
+        completion_words = (sorted(waypoints.keys())
+                            + [g + "[]" for g in groups_for_complete]
+                            + ["list", "ls", "q", "q!", "quit", "exit"])
 
         def completer(text, state):
             opts = [w for w in completion_words if w.startswith(text)]
@@ -271,16 +345,23 @@ def main():
     print("OK")
 
     print("\nCommands at prompt:")
-    print("  <label>          send G1 to that waypoint (TAB to complete)")
-    print("  list / ls        show all available labels")
+    print("  <label>          send G1 to that single waypoint (TAB completes)")
+    print("  <name>[]         walk a series in numeric order (e.g. office[])")
+    print("  list / ls        show all available labels (series folded)")
     print("  q  / quit        exit")
     print("  q! / Ctrl+C      cancel current motion (zero-vel, no squat) + exit\n")
+    print(f"Series traversal: {args.retries} retries per waypoint, then abort.")
+    if args.dwell > 0:
+        print(f"Dwell: {args.dwell:.1f}s standing still at each waypoint after arrival.")
     print("To preempt mid-goal, hit Ctrl+C — same effect as soft_stop.sh:")
     print("  cancels the in-flight nav2 goal, twist_mux falls back to")
-    print("  /cmd_vel_zero (0 Twist), G1 stops standing in sport mode.\n")
+    print("  /cmd_vel_zero (0 Twist), G1 stops standing in sport mode.")
+    print("Inside a series, Ctrl+C also aborts the rest of the sequence.\n")
 
     # Append-only csv log of every segment, useful as an ad-hoc dataset
     # without having to set up rosbag. New file gets a header.
+    # Schema as of D-013 series support: adds group / seq_idx / attempt
+    # columns for series-traversal analytics. Singles leave them blank.
     csv_new = not os.path.exists(args.csv)
     csv_f = open(args.csv, "a", newline="")
     csv_w = csv.writer(csv_f)
@@ -288,7 +369,8 @@ def main():
         csv_w.writerow(["timestamp", "label", "goal_x", "goal_y", "goal_yaw_deg",
                         "nav2_status", "duration_s",
                         "reached_x", "reached_y", "reached_yaw_deg",
-                        "xy_err_m", "yaw_err_deg"])
+                        "xy_err_m", "yaw_err_deg",
+                        "group", "seq_idx", "attempt"])
         csv_f.flush()
 
     def soft_brake_on_exit():
@@ -305,6 +387,84 @@ def main():
                 wait_future(fut, 3.0)
         except Exception:
             pass
+
+    def goto_one(label, wp, group="", seq_idx="", attempt=1):
+        """Send one NavigateToPose goal, sample reached pose on success,
+        append a CSV row. Returns (success: bool, status: str). Raises
+        UserAbort if the operator hits Ctrl+C during the goal."""
+        pose = make_pose_stamped(node, wp)
+        rx = ry = ryaw = None
+        xy_err = yaw_err_deg = None
+        success, status, dur = send_one(ac, pose)
+        print(f"     nav2: {status} ({dur:.1f}s)"
+              + (f"  [attempt {attempt}/{args.retries}]" if group else ""))
+        if success:
+            reached = sample_pose(buf)
+            if reached:
+                rx, ry, ryaw = reached
+                xy_err = math.hypot(rx - wp["x"], ry - wp["y"])
+                yaw_err_deg = math.degrees(yaw_diff(ryaw, wp["yaw"]))
+                print(f"     reached: ({rx:.3f}, {ry:.3f}, {math.degrees(ryaw):.1f}deg)"
+                      f"  xy_err={xy_err:.3f}m  yaw_err={yaw_err_deg:.1f}deg")
+        csv_w.writerow([
+            time.strftime("%Y-%m-%dT%H:%M:%S"), label,
+            f"{wp['x']:.4f}", f"{wp['y']:.4f}", f"{math.degrees(wp['yaw']):.2f}",
+            status, f"{dur:.2f}",
+            f"{rx:.4f}" if rx is not None else "",
+            f"{ry:.4f}" if ry is not None else "",
+            f"{math.degrees(ryaw):.2f}" if ryaw is not None else "",
+            f"{xy_err:.4f}" if xy_err is not None else "",
+            f"{yaw_err_deg:.2f}" if yaw_err_deg is not None else "",
+            group, str(seq_idx) if seq_idx != "" else "", str(attempt),
+        ])
+        csv_f.flush()
+        return success, status
+
+    def walk_series(group, members):
+        """members is a list of (idx, label). Walks them in order. Each
+        waypoint gets up to args.retries attempts. First all-failure
+        aborts the whole sequence. Ctrl+C cancels current hop and aborts.
+        Returns True if completed, False if aborted (any reason)."""
+        total = len(members)
+        print(f"\n  walking {group}[] ({total} pts: "
+              f"{', '.join(lab for _, lab in members)})")
+        for hop, (idx, label) in enumerate(members, 1):
+            wp = waypoints[label]
+            print(f"\n  [{hop}/{total}] -> {label} (x={wp['x']:.2f} y={wp['y']:.2f} "
+                  f"yaw={math.degrees(wp['yaw']):.0f}deg)")
+            success = False
+            for attempt in range(1, args.retries + 1):
+                if attempt > 1:
+                    print(f"     retry {attempt}/{args.retries} after {RETRY_BACKOFF_S}s ...")
+                    time.sleep(RETRY_BACKOFF_S)
+                try:
+                    success, status = goto_one(label, wp, group, idx, attempt)
+                except UserAbort:
+                    print("     Ctrl+C — goal cancelled. Series aborted.")
+                    csv_w.writerow([
+                        time.strftime("%Y-%m-%dT%H:%M:%S"), label,
+                        f"{wp['x']:.4f}", f"{wp['y']:.4f}",
+                        f"{math.degrees(wp['yaw']):.2f}",
+                        "USER_CANCELED", "0.00", "", "", "", "", "",
+                        group, str(idx), str(attempt),
+                    ])
+                    csv_f.flush()
+                    return False
+                if success:
+                    break
+            if not success:
+                print(f"\n  series {group}[] aborted: "
+                      f"{label} failed after {args.retries} attempts.")
+                return False
+            if args.dwell > 0 and hop < total:
+                print(f"     dwell {args.dwell:.1f}s ...")
+                try:
+                    time.sleep(args.dwell)
+                except KeyboardInterrupt:
+                    print("     Ctrl+C during dwell — series aborted.")
+                    return False
+        print(f"\n  series {group}[] completed: {total}/{total} ok.")
+        return True
 
     aborted = False
 
@@ -331,46 +491,49 @@ def main():
         if line in ("list", "ls"):
             print_labels(waypoints); continue
 
+        # Series traversal: `<name>[]`
+        bm = SERIES_BRACKET_RE.match(line)
+        if bm:
+            group = bm.group(1)
+            current_series = compute_series(waypoints)
+            if group not in current_series:
+                print(f"  no series {group}[] in this yaml. "
+                      f"`list` shows what's available.")
+                continue
+            ok = walk_series(group, current_series[group])
+            if not ok:
+                aborted = True
+                break
+            print()
+            continue
+
         label = line
         if label not in waypoints:
-            print(f"  no such label: {label!r}. Type 'list' to see options.")
+            # Helpful: if user typed a bare group name, suggest the [] form
+            current_series = compute_series(waypoints)
+            if label in current_series:
+                print(f"  {label!r} is a series, not a single point. "
+                      f"Use {label}[] to walk it (or {label}1 to test member 1).")
+            else:
+                print(f"  no such label: {label!r}. Type 'list' to see options.")
             continue
 
         wp = waypoints[label]
         print(f"\n  -> {label} (x={wp['x']:.2f} y={wp['y']:.2f} "
               f"yaw={math.degrees(wp['yaw']):.0f}deg)")
-        pose = make_pose_stamped(node, wp)
-        rx = ry = ryaw = None
-        xy_err = yaw_err_deg = None
         try:
-            success, status, dur = send_one(ac, pose)
+            goto_one(label, wp)
         except UserAbort:
             print("     Ctrl+C — goal cancelled (soft stop, G1 standing).")
-            success, status, dur = False, "USER_CANCELED", 0.0
+            csv_w.writerow([
+                time.strftime("%Y-%m-%dT%H:%M:%S"), label,
+                f"{wp['x']:.4f}", f"{wp['y']:.4f}",
+                f"{math.degrees(wp['yaw']):.2f}",
+                "USER_CANCELED", "0.00", "", "", "", "", "",
+                "", "", "1",
+            ])
+            csv_f.flush()
             aborted = True
-
-        print(f"     nav2: {status} ({dur:.1f}s)")
-        if success:
-            reached = sample_pose(buf)
-            if reached:
-                rx, ry, ryaw = reached
-                xy_err = math.hypot(rx - wp["x"], ry - wp["y"])
-                yaw_err_deg = math.degrees(yaw_diff(ryaw, wp["yaw"]))
-                print(f"     reached: ({rx:.3f}, {ry:.3f}, {math.degrees(ryaw):.1f}deg)"
-                      f"  xy_err={xy_err:.3f}m  yaw_err={yaw_err_deg:.1f}deg")
-
-        # Append regardless of success, so failures show up in the dataset
-        csv_w.writerow([
-            time.strftime("%Y-%m-%dT%H:%M:%S"), label,
-            f"{wp['x']:.4f}", f"{wp['y']:.4f}", f"{math.degrees(wp['yaw']):.2f}",
-            status, f"{dur:.2f}",
-            f"{rx:.4f}" if rx is not None else "",
-            f"{ry:.4f}" if ry is not None else "",
-            f"{math.degrees(ryaw):.2f}" if ryaw is not None else "",
-            f"{xy_err:.4f}" if xy_err is not None else "",
-            f"{yaw_err_deg:.2f}" if yaw_err_deg is not None else "",
-        ])
-        csv_f.flush()
         print()
 
         if aborted:

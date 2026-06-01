@@ -21,9 +21,21 @@ Behaviour:
 Built-in commands at the prompt (in addition to typing a label):
   list / ls          → print all current labels with their poses
   del <label>        → delete one label
+  del <name>[]       → delete all members of a series
+  rename <old> <new> rename a waypoint (group refs updated too)
   q / quit / exit    → save and quit (Ctrl-D works too)
 
 Label syntax:  [A-Za-z][A-Za-z0-9_-]*   (no spaces, no special chars)
+
+Series capture (`office[]`):
+  Type `<name>[]` at the prompt to capture a numbered sequence. The
+  script prompts `<name>[N]>` for each member; N starts at the next free
+  integer (existing office1..office4 → next is office5). Type `q` inside
+  a series prompt to return to `wp>` without quitting the script.
+  Series prefix must match `[A-Za-z][A-Za-z_]*` (letters/underscores
+  only; no digits, hyphens, or other punctuation in the prefix).
+  Mutual exclusion: bare `<name>` and series `<name>[]` cannot coexist.
+  This guarantees `goto <name>` is unambiguous downstream.
 
 Usage:
     docker exec -it 3d_nav_ros2 bash -lc "
@@ -65,6 +77,34 @@ TARGET_FRAME = "body"
 TF_STREAM_WAIT_S = 10.0
 OVERWRITE_PROMPT_DIST_M = 0.30
 LABEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+# Series detection: prefix is letters/underscores only (no digits or
+# punctuation in prefix), suffix is one or more digits. Sorted by integer
+# value of the suffix so office10 lands after office9.
+SERIES_RE = re.compile(r"^([A-Za-z][A-Za-z_]*)(\d+)$")
+SERIES_BRACKET_RE = re.compile(r"^([A-Za-z][A-Za-z_]*)\[\]$")
+
+
+def parse_series_member(label):
+    """Return (group, idx_int) if label is a series member, else None."""
+    m = SERIES_RE.match(label)
+    if not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def compute_series(waypoints):
+    """Return {group: [(idx, label), ...]} sorted by idx."""
+    series = {}
+    for label in waypoints:
+        parsed = parse_series_member(label)
+        if parsed is None:
+            continue
+        group, idx = parsed
+        series.setdefault(group, []).append((idx, label))
+    for group in series:
+        series[group].sort(key=lambda t: t[0])
+    return series
 
 
 def quat_to_yaw(qx, qy, qz, qw):
@@ -161,12 +201,44 @@ def cmd_list(waypoints):
     if not waypoints:
         print("  (no waypoints yet)")
         return
-    for label in sorted(waypoints.keys()):
+    series = compute_series(waypoints)
+    series_members = {label for entries in series.values() for _, label in entries}
+    # Singles first (alphabetically), then folded series
+    singles = sorted(label for label in waypoints if label not in series_members)
+    for label in singles:
         print_pose_line(label, waypoints[label])
-    print(f"  total: {len(waypoints)}")
+    for group in sorted(series.keys()):
+        entries = series[group]
+        idxs = [i for i, _ in entries]
+        xs = [waypoints[lab]["x"] for _, lab in entries]
+        ys = [waypoints[lab]["y"] for _, lab in entries]
+        idx_str = (f"{group}{idxs[0]}..{group}{idxs[-1]}"
+                   if len(idxs) > 1 and idxs == list(range(idxs[0], idxs[-1] + 1))
+                   else ", ".join(f"{group}{i}" for i in idxs))
+        print(f"  {group + '[]':<20} ({len(entries)} pts) {idx_str}  "
+              f"x∈[{min(xs):.2f},{max(xs):.2f}]  y∈[{min(ys):.2f},{max(ys):.2f}]")
+    print(f"  total: {len(waypoints)} ({len(singles)} singles, "
+          f"{sum(len(v) for v in series.values())} in {len(series)} series)")
 
 
 def cmd_del(waypoints, groups, label, path):
+    # del office[]  -> delete all members of series
+    bm = SERIES_BRACKET_RE.match(label)
+    if bm:
+        group = bm.group(1)
+        series = compute_series(waypoints)
+        if group not in series:
+            print(f"  no such series: {group}[]")
+            return
+        members = [lab for _, lab in series[group]]
+        for lab in members:
+            del waypoints[lab]
+            for g_name, g_list in list(groups.items()):
+                if lab in g_list:
+                    g_list.remove(lab)
+        save_yaml(path, waypoints, groups)
+        print(f"  deleted series {group}[] ({len(members)} pts: {', '.join(members)})")
+        return
     if label not in waypoints:
         print(f"  no such label: {label!r}")
         return
@@ -195,6 +267,80 @@ def cmd_rename(waypoints, groups, old, new, path):
         groups[g_name] = [new if x == old else x for x in g_list]
     save_yaml(path, waypoints, groups)
     print(f"  renamed {old} -> {new}")
+
+
+def capture_one(buf, waypoints, label):
+    """Sample current pose and stage it under `label` in `waypoints` (no
+    save). Returns the captured pose dict, or None on failure / skip.
+    Handles overwrite confirmation when the new pose is far from the old."""
+    old = waypoints.get(label)
+    pose = sample_pose(buf, SAMPLE_DURATION_S)
+    if pose is None:
+        print("  FAILED to read TF during sampling.")
+        return None
+    if old is not None:
+        d = math.hypot(pose["x"] - old["x"], pose["y"] - old["y"])
+        if d > OVERWRITE_PROMPT_DIST_M:
+            ans = input(f"  {label!r} exists at ({old['x']:.2f},{old['y']:.2f}); "
+                        f"new is ({pose['x']:.2f},{pose['y']:.2f}), {d:.2f}m away. "
+                        f"Overwrite? (y/N): ").strip().lower()
+            if ans not in ("y", "yes"):
+                print("  skipped")
+                return None
+        else:
+            print(f"  refreshing {label} ({d*100:.1f} cm shift)")
+    waypoints[label] = pose
+    return pose
+
+
+def capture_series(buf, waypoints, groups, group, path):
+    """Series capture loop. group is the bare prefix (e.g. 'office').
+    Mutual exclusion: refuses if bare `group` already exists in waypoints.
+    Picks up where the existing series left off (next free integer)."""
+    if group in waypoints:
+        print(f"  cannot start series {group}[]: bare label {group!r} already "
+              f"exists. Run `del {group}` first to convert to series.")
+        return
+    series = compute_series(waypoints).get(group, [])
+    next_idx = (max(idx for idx, _ in series) + 1) if series else 1
+    if series:
+        existing = ", ".join(lab for _, lab in series)
+        print(f"  resuming series {group}[]: {len(series)} existing ({existing}); "
+              f"new captures start at {group}{next_idx}.")
+    else:
+        print(f"  starting new series {group}[]; first capture will be {group}{next_idx}.")
+    print(f"  type `q` to leave series mode and return to wp> (script keeps running).")
+    while True:
+        prompt = f"{group}[{next_idx}]> "
+        try:
+            line = input(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if line in ("q", "quit"):
+            return
+        if line in ("list", "ls"):
+            cmd_list(waypoints); continue
+        if line == "":
+            # Bare Enter: capture under the next index
+            label = f"{group}{next_idx}"
+        elif line.isdigit():
+            # `5` → recapture/jump to office5 (allows redoing a specific one)
+            label = f"{group}{int(line)}"
+        else:
+            print(f"  unknown command in series mode: {line!r}. "
+                  f"Empty line = capture next ({group}{next_idx}); "
+                  f"<n> = capture {group}<n>; q = leave series mode.")
+            continue
+        captured = capture_one(buf, waypoints, label)
+        if captured is None:
+            continue
+        save_yaml(path, waypoints, groups)
+        print(f"  captured ", end="")
+        print_pose_line(label, captured)
+        # Advance next_idx past whatever the user just picked, so empty-Enter
+        # always lands on a fresh slot.
+        next_idx = max(next_idx, parse_series_member(label)[1] + 1)
 
 
 def main():
@@ -229,8 +375,10 @@ def main():
 
     print("\nCommands at prompt:")
     print("  <label>            capture current pose under that label")
-    print("  list / ls          show all captured waypoints")
+    print("  <name>[]           enter series capture mode (office[] -> office1, office2, ...)")
+    print("  list / ls          show all captured waypoints (series folded)")
     print("  del <label>        delete a waypoint")
+    print("  del <name>[]       delete an entire series")
     print("  rename <old> <new> rename a waypoint (group refs updated too)")
     print("  q / quit           save and exit (Ctrl-D works too)\n")
 
@@ -255,33 +403,34 @@ def main():
                 continue
             cmd_rename(waypoints, groups, parts[0], parts[1], args.output); continue
 
+        # Series capture: `<name>[]`
+        bm = SERIES_BRACKET_RE.match(line)
+        if bm:
+            capture_series(buf, waypoints, groups, bm.group(1), args.output)
+            continue
+
         label = line
         if not LABEL_RE.match(label):
             print(f"  invalid label {label!r}: must match [A-Za-z][A-Za-z0-9_-]*")
             continue
 
-        old = waypoints.get(label)
-        pose = sample_pose(buf, SAMPLE_DURATION_S)
-        if pose is None:
-            print("  FAILED to read TF during sampling.")
+        # Single-point capture: refuse if a series with this label as prefix
+        # already exists. Avoids ambiguous `goto office` downstream.
+        if label not in waypoints:
+            existing_series = compute_series(waypoints).get(label)
+            if existing_series:
+                members = ", ".join(lab for _, lab in existing_series)
+                print(f"  cannot capture single {label!r}: series {label}[] already "
+                      f"exists with {len(existing_series)} pts ({members}). Use "
+                      f"{label}[] to extend, or `del {label}[]` to wipe the series first.")
+                continue
+
+        captured = capture_one(buf, waypoints, label)
+        if captured is None:
             continue
-
-        if old is not None:
-            d = math.hypot(pose["x"] - old["x"], pose["y"] - old["y"])
-            if d > OVERWRITE_PROMPT_DIST_M:
-                ans = input(f"  {label!r} exists at ({old['x']:.2f},{old['y']:.2f}); "
-                            f"new is ({pose['x']:.2f},{pose['y']:.2f}), {d:.2f}m away. "
-                            f"Overwrite? (y/N): ").strip().lower()
-                if ans not in ("y", "yes"):
-                    print("  skipped")
-                    continue
-            else:
-                print(f"  refreshing {label} ({d*100:.1f} cm shift)")
-
-        waypoints[label] = pose
         save_yaml(args.output, waypoints, groups)
         print(f"  captured ", end="")
-        print_pose_line(label, pose)
+        print_pose_line(label, captured)
 
     save_yaml(args.output, waypoints, groups)
     print(f"\nSaved {len(waypoints)} waypoints to {args.output}.")
