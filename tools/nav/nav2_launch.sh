@@ -53,23 +53,48 @@ G1_WRITE_BIN=/botbrain_ws/install/g1_pkg/lib/g1_pkg/g1_write_node
 }
 
 # ── helper ─────────────────────────────────────────
-wait_for() { local desc=$1 cmd=$2 timeout=${3:-60}
+# wait_for $desc $cmd [$timeout=60] [$logfile] [$hint]
+#   On timeout, dumps tail of $logfile (if given) inline so the failing
+#   node's actual stderr is visible without a separate `tail` step.
+wait_for() {
+    local desc=$1 cmd=$2 timeout=${3:-60} logfile=${4:-} hint=${5:-}
     for i in $(seq 1 $timeout); do
         eval "$cmd" 2>/dev/null && return 0
         sleep 1
     done
     echo "  TIMEOUT after ${timeout}s: $desc" >&2
+    if [ -n "$logfile" ] && [ -f "$logfile" ]; then
+        echo "  ── tail of $logfile (last 25 lines) ──" >&2
+        tail -25 "$logfile" 2>/dev/null | sed 's/^/  | /' >&2
+        echo "  ───────────────────────────────────────────" >&2
+    fi
+    [ -n "$hint" ] && echo "  HINT: $hint" >&2
     return 1
 }
 
-die() { echo "FATAL: $1" >&2; exit 1; }
+# die $msg [$logfile] [$hint]
+#   Hard-stop with the failing step's log tail dumped inline.
+die() {
+    local msg=$1 logfile=${2:-} hint=${3:-}
+    echo "" >&2
+    echo "FATAL: $msg" >&2
+    if [ -n "$logfile" ] && [ -f "$logfile" ]; then
+        echo "── tail of $logfile (last 30 lines) ──" >&2
+        tail -30 "$logfile" 2>/dev/null | sed 's/^/  | /' >&2
+        echo "──────────────────────────────────────────────" >&2
+    fi
+    [ -n "$hint" ] && echo "HINT: $hint" >&2
+    exit 1
+}
 
 # ── 1/3 Nav2 stack ─────────────────────────────────
 echo -n "[1/3] Nav2 (controller + planner + bt_navigator + behaviors + smoother + waypoint_follower) ... "
 ros2 launch bot_navigation navigation.launch.py > /tmp/nav2.log 2>&1 &
 wait_for "Nav2 lifecycle active" \
     "ros2 lifecycle get /bt_navigator 2>/dev/null | grep -q active" 60 \
-    || die "Nav2 lifecycle did not reach active. See /tmp/nav2.log."
+    /tmp/nav2.log "MPPI param type mismatch (e.g. vy_max: 0 must be 0.0)? Or D-009 topic-fork yaml missing? Verify nav2_params.yaml and rebuild g1_pkg if needed." \
+    || die "Nav2 lifecycle did not reach active." /tmp/nav2.log \
+        "Common causes: (1) MPPI yaml int/double mismatch, (2) costmap subscribed to a topic that isn't publishing yet, (3) g1_pkg install stale (rebuild). 'colcon-symlink-install-trap' memory note may apply."
 echo "OK"
 
 # ── 2/3 twist_mux ──────────────────────────────────
@@ -77,7 +102,8 @@ echo -n "[2/3] twist_mux ... "
 ros2 launch bot_bringup twist_mux.launch.py > /tmp/twist_mux.log 2>&1 &
 wait_for "twist_mux node" \
     "ros2 node list 2>/dev/null | grep -q twist_mux" 30 \
-    || die "twist_mux did not register. See /tmp/twist_mux.log."
+    /tmp/twist_mux.log "twist_mux config yaml present and parseable?" \
+    || die "twist_mux did not register." /tmp/twist_mux.log "twist_mux is bot_bringup's standard launch — failure usually means the bot_bringup install is broken or twist_mux yaml is malformed."
 echo "OK"
 
 # ── 2.5/3 zero_vel_publisher activate (R-001 fix) ──
@@ -88,12 +114,14 @@ echo "OK"
 echo -n "[2.5/3] zero_vel_publisher lifecycle activate (R-001 manual fix) ... "
 wait_for "zero_vel_publisher node" \
     "ros2 node list 2>/dev/null | grep -q zero_vel_publisher" 15 \
-    || die "zero_vel_publisher did not register."
+    /tmp/twist_mux.log "zero_vel_publisher should have registered with twist_mux launch" \
+    || die "zero_vel_publisher did not register." /tmp/twist_mux.log
 ros2 lifecycle set /zero_vel_publisher configure >/dev/null 2>&1
 ros2 lifecycle set /zero_vel_publisher activate  >/dev/null 2>&1
 wait_for "zero_vel_publisher active" \
     "ros2 lifecycle get /zero_vel_publisher 2>/dev/null | grep -q active" 15 \
-    || die "zero_vel_publisher did not reach active."
+    /tmp/twist_mux.log "lifecycle transitions failed silently — check zero_vel_publisher.py for crash on configure" \
+    || die "zero_vel_publisher did not reach active." /tmp/twist_mux.log
 echo "OK"
 
 # ── 3/3 g1_write_node (SDK control bridge) ─────────
@@ -105,15 +133,18 @@ nohup "$G1_WRITE_BIN" > /tmp/walk.log 2>&1 &
 G1_WRITE_PID=$!
 wait_for "robot_write_node registered" \
     "ros2 node list 2>/dev/null | grep -q robot_write_node" 15 \
-    || die "g1_write_node did not register. See /tmp/walk.log."
+    /tmp/walk.log "g1_write_node binary may be ABI-broken — rebuild g1_pkg" \
+    || die "g1_write_node did not register." /tmp/walk.log
 ros2 lifecycle set /robot_write_node configure >/dev/null 2>&1
 wait_for "robot_write_node configured (SDK init done)" \
     "ros2 lifecycle get /robot_write_node 2>/dev/null | grep -q inactive" 30 \
-    || die "g1_write_node configure failed. See /tmp/walk.log."
+    /tmp/walk.log "SDK init usually fails when (a) Unitree network 192.168.123.x not reachable, or (b) another instance of g1_write_node already holds the SDK channel — pkill first" \
+    || die "g1_write_node configure failed." /tmp/walk.log
 ros2 lifecycle set /robot_write_node activate  >/dev/null 2>&1
 wait_for "robot_write_node active" \
     "ros2 lifecycle get /robot_write_node 2>/dev/null | grep -q active" 10 \
-    || die "g1_write_node activate failed. See /tmp/walk.log."
+    /tmp/walk.log \
+    || die "g1_write_node activate failed." /tmp/walk.log
 echo "OK (PID $G1_WRITE_PID)"
 
 echo ""
