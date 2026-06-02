@@ -1,19 +1,11 @@
 # g1_3d_nav_ros2
 
-> Status: 2026-05-30 — Nav2 obstacle layer reframed onto PointCloud2 with
-> ground-anchored frames (D-012). FAST-LIO's `body` frame, the localization
-> PCD, `odom`, and `map` now share `z=0 = ground`, so BotBrain's `0.07/1.30`
-> height filter is the supported configuration. Pre-2026-05-30 LaserScan
-> obstacle path is documented as the rejected alternative; rollback bundle
-> in `backups/2026-05-30_pre_option3/`.
-
 ROS 2 Humble native 3D localization runtime for the Unitree G1 Edu humanoid.
-Single RMW (`rmw_zenoh_cpp`), no DDS bridge, no ros1_bridge.
+Single RMW (`rmw_zenoh_cpp`), no DDS bridge.
 
 ## What this repo holds
 
 - `3d_nav_g1/g1_ws/src/` — full deepglint source tree (FAST_LIO, open3d_loc)
-  with all 2026-05-25 patches applied
 - `3d_nav_g1/livox_ws/src/` — Livox MID360 ROS 2 driver source
 - `3d_nav_g1/deps/open3d141/` — Open3D 0.14.1 headers + CMake config (binary
   libs separate, see `3d_nav_g1/deps/open3d141/README.md`)
@@ -24,9 +16,6 @@ Single RMW (`rmw_zenoh_cpp`), no DDS bridge, no ros1_bridge.
 - `maps/` — 2D occupancy grid (3D PCD is build product, not in git — see
   `maps/README.md`)
 - `configs/` — RViz2 configs + `g1_host.txt` source-of-truth IP
-
-The full set of patches is what makes the stack work — see `docs/DECISIONS.md`
-for the architecturally significant decisions.
 
 ## Runtime topology
 
@@ -80,7 +69,7 @@ to the same router across the network.
 
 [G1]   ssh unitree@<G1 ip>
 [G1]   git clone https://github.com/leokkzzhzzz/g1_3d_nav_ros2.git \
-            /home/unitree/g1_3d_nav_ros2_repo
+            /home/unitree/g1_3d_nav_ros2
 ```
 
 > G1 端 clone 路径**必须是** `/home/unitree/g1_3d_nav_ros2_repo`——这个路径
@@ -104,8 +93,8 @@ to the same router across the network.
 ```bash
 [G1] docker run -d --name 3d_nav_ros2 \
         --network host --ipc host \
-        -v /home/unitree/g1_3d_nav_ros2_repo:/g1_3d_nav_ros2 \
-        -v /home/unitree/g1_3d_nav_ros2_repo/maps:/g1_3d_nav_ros2/maps \
+        -v /home/unitree/g1_3d_nav_ros2:/g1_3d_nav_ros2 \
+        -v /home/unitree/g1_3d_nav_ros2/maps:/g1_3d_nav_ros2/maps \
         g1_nav_final:latest sleep infinity
 ```
 
@@ -115,7 +104,7 @@ host 上做 → 容器内立即生效，无需 `docker cp`。
 ### 5. 准备 scans.pcd
 
 新场地 → 跳到 [Mapping](#mapping) 自己建。
-有现成 PCD（≥ 1 MB） → 放到 `/home/unitree/g1_3d_nav_ros2_repo/maps/scans.pcd`。
+有现成 PCD（≥ 1 MB） → 放到 `/home/unitree/g1_3d_nav_ros2/maps/scans.pcd`。
 
 > **D-012 提醒**: 自 2026-05-30 起，PCD 必须以**地面为 z=0**（floor 1pct ≈ 0
 > m）。`tools/mapping/grid_accumulator.py` / HongTu 输出的原始 PCD 是以建图
@@ -128,7 +117,7 @@ host 上做 → 容器内立即生效，无需 `docker cp`。
 
 什么时候用：(a) 第一次给新场地建图、(b) 现场地图对不上现实需要重建。
 
-**输出**（写到 host `/home/unitree/g1_3d_nav_ros2_repo/maps/`）：
+**输出**（写到 host `/home/unitree/g1_3d_nav_ros2/maps/`）：
 
 | 文件 | 用途 |
 |---|---|
@@ -194,7 +183,7 @@ DONE. Files in /g1_3d_nav_ros2/maps/ :
 
 | 容器内 | host 上 |
 |---|---|
-| `/g1_3d_nav_ros2/maps/scans.pcd` | `/home/unitree/g1_3d_nav_ros2_repo/maps/scans.pcd` |
+| `/g1_3d_nav_ros2/maps/scans.pcd` | `/home/unitree/g1_3d_nav_ros2/maps/scans.pcd` |
 | `/g1_3d_nav_ros2/maps/accumulated_grid.pgm` | `…/maps/accumulated_grid.pgm` |
 | `/g1_3d_nav_ros2/maps/accumulated_grid.yaml` | `…/maps/accumulated_grid.yaml` |
 
@@ -238,7 +227,7 @@ contained 的 ROS 1 noetic Docker 镜像 + RViz panel，跑在 **workstation 端
 
 ```bash
 # 1. 从 G1 拉地图到 workstation
-[host] scp unitree@<G1 ip>:/home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.{pgm,yaml} \
+[host] scp unitree@<G1 ip>:/home/unitree/g1_3d_nav_ros2/maps/accumulated_grid.{pgm,yaml} \
         "$HOME/g1_maps/"
 [host] sed -i 's|^image:.*|image: accumulated_grid.pgm|' "$HOME/g1_maps/accumulated_grid.yaml"
 
@@ -258,7 +247,7 @@ contained 的 ROS 1 noetic Docker 镜像 + RViz panel，跑在 **workstation 端
 [host] sed -i 's|^image:.*|image: /g1_3d_nav_ros2/maps/accumulated_grid.pgm|' \
         "$HOME/g1_maps/accumulated_grid.yaml"
 [host] scp "$HOME/g1_maps"/accumulated_grid.{pgm,yaml,json} \
-        unitree@<G1 ip>:/home/unitree/g1_3d_nav_ros2_repo/maps/
+        unitree@<G1 ip>:/home/unitree/g1_3d_nav_ros2/maps/
 
 # 5. G1 端 hot-reload map_server（不用重启 nav 栈）
 [G1] docker exec 3d_nav_ros2 bash -c '
@@ -291,7 +280,7 @@ planner → controller → twist_mux → `g1_write_node` → SDK `LocoClient::Mo
 # 等 "=== STACK READY: G1 motion ENABLED ==="
 
 # Window C — workstation：RViz2
-[host] cd <repo>
+[host] cd 3d_nav_ros2
 [host] bash tools/host_side/g1_nav_loc_rviz2.sh
 
 # Window D - stop_robot
