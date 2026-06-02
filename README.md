@@ -6,10 +6,6 @@
 > height filter is the supported configuration. Pre-2026-05-30 LaserScan
 > obstacle path is documented as the rejected alternative; rollback bundle
 > in `backups/2026-05-30_pre_option3/`.
->
-> Status: 2026-05-28 — verified end-to-end on G1 with cross-host RViz2 from a
-> workstation. Image: `docker.io/zwterzt/g1_3d_nav_ros2:latest` SHA
-> `137a5b46be62...`.
 
 ROS 2 Humble native 3D localization runtime for the Unitree G1 Edu humanoid.
 Single RMW (`rmw_zenoh_cpp`), no DDS bridge, no ros1_bridge.
@@ -55,7 +51,7 @@ to the same router across the network.
 
 ## Zenoh workflow
 
-跨机器 ROS 2 通信全程走 Zenoh，不用 DDS。三件事记牢：
+跨机器 ROS 2 通信全程走 Zenoh，不用 DDS。
 
 1. **G1 容器内**：`rmw_zenohd` 监听 `0.0.0.0:7448`；所有节点（fast_lio /
    open3d_loc / map_server / nav2 / etc.）用 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`，
@@ -150,7 +146,7 @@ host 上做 → 容器内立即生效，无需 `docker cp`。
 # 这期间 G1 必须站着别动
 
 # Window B — workstation：可视化
-[host] cd <repo>
+[host] cd g1_3d_nav_ros2
 [host] bash tools/host_side/mapping_rviz2.sh
 ```
 
@@ -335,20 +331,6 @@ planner → controller → twist_mux → `g1_write_node` → SDK `LocoClient::Mo
 [G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/soft_stop.sh   # 常规
 [G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/estop.sh           # 紧急
 ```
-
-### Troubleshooting — `base_footprint frame does not exist`
-
-`/tmp/nav2.log` 大量 `Invalid frame ID "base_footprint"`，RViz2 看到 goal
-acks 但没 plan polyline、G1 不动。修法：
-
-```bash
-[G1] docker stop 3d_nav_ros2 && docker start 3d_nav_ros2
-# 然后重 launch.sh + nav2_launch.sh
-```
-
-详见 Roadmap R-009（D-009 fork mount overlay 行为问题）。
-
----
 
 ## Waypoint testing — Gotop
 
