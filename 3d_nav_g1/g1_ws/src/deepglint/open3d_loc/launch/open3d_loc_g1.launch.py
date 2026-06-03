@@ -19,11 +19,10 @@ def generate_launch_description():
         description='Use simulation time'
     )
 
-    # G1: PCD map path is parameterised. Default points at the FAST-LIO mapping
-    # output baked into /g1_3d_nav_ros2/maps/scans.pcd. Override with map_file:=...
+    # RGB stack: PCD map path. Default points at the FAST-LIVO2 RGB mapping output.
     map_file_arg = DeclareLaunchArgument(
         'map_file',
-        default_value='/g1_3d_nav_ros2/maps/scans.pcd',
+        default_value='/g1_3d_nav_rgb/maps/scans.pcd',
         description='Path to PCD map file for ICP localization'
     )
     map_file = LaunchConfiguration('map_file')

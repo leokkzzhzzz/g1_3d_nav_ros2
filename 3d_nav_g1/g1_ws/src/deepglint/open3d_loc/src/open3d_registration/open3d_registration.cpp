@@ -72,6 +72,12 @@ namespace pcd_tools
                 *source_transformed, *target, icp_distance_threshold, Eigen::Matrix4d::Identity(),
                 open3d::pipelines::registration::TransformationEstimationForGeneralizedICP(), _criteria_icp);
         }
+        else if (icp_method == 3)
+        {
+            registration_result = open3d::pipelines::registration::RegistrationColoredICP(
+                *source_transformed, *target, icp_distance_threshold, Eigen::Matrix4d::Identity(),
+                open3d::pipelines::registration::TransformationEstimationForColoredICP(), _criteria_icp);
+        }
         return registration_result;
     }
 

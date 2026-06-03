@@ -1,0 +1,3 @@
+[submodule "3d_nav_g1/g1_ws/src/deepglint/FAST_LIVO2"]
+	path = 3d_nav_g1/g1_ws/src/deepglint/FAST_LIVO2
+	url = https://gitee.com/evo-matrix_robotics/fastlivo2.git

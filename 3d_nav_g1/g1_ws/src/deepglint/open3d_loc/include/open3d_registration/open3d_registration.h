@@ -106,7 +106,7 @@ namespace pcd_tools
 
         // float icp_distance_threshold = voxel_size * 1.5;
 
-        // icp_method(optional): point to point(0), point to plane(1), generalized icp(2), default 1
+        // icp_method(optional): point to point(0), point to plane(1), generalized icp(2), colored icp(3), default 1
         int icp_method = 1;
 
         // reduce icp distance threshold to 80%,

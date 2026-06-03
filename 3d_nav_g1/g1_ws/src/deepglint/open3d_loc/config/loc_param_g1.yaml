@@ -14,3 +14,6 @@ global_localization_node:
     kf_baselink2map/x: [0.001, 0.002]
     kf_baselink2map/y: [0.001, 0.005]
     kf_baselink2map/z: [0.00001, 0.04]
+
+    # ColoredICP (3) for RGB stack; 0=point2point 1=point2plane 2=generalizedICP
+    icp_method: 3

@@ -161,6 +161,7 @@ private:
     int queue_maxsize_;
     double voxelsize_coarse_;
     double voxelsize_fine_;
+    int icp_method_;
 
     /// @brief 定位配准fitness(overlap)阈值
     double threshold_fitness_;
@@ -277,9 +278,9 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     loc_fitness_ = 0.0;
     // 注册回调函数
     sub_baselink2odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/Odometry_loc", 50, std::bind(&GloabalLocalization::CallbackBaselink2Odom, this, std::placeholders::_1));
+        "/aft_mapped_to_init", 50, std::bind(&GloabalLocalization::CallbackBaselink2Odom, this, std::placeholders::_1));
     sub_scan_cur_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "/cloud_registered_1", 50, std::bind(&GloabalLocalization::CallbackScan, this, std::placeholders::_1));
+        "/cloud_registered", 50, std::bind(&GloabalLocalization::CallbackScan, this, std::placeholders::_1));
     sub_initialpose_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/initialpose", 50, std::bind(&GloabalLocalization::CallbackInitialPose, this, std::placeholders::_1));
 
@@ -326,6 +327,7 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->declare_parameter<double>("threshold_fitness", 0.9);
     this->declare_parameter<std::vector<double>>("initialpose", std::vector<double>());
     this->declare_parameter<double>("dis_updatemap", 1);
+    this->declare_parameter<int>("icp_method", 1);
 
     this->get_parameter("pcd_queue_maxsize", queue_maxsize_);
     this->get_parameter("save_scan", save_scan_);
@@ -360,6 +362,10 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->get_parameter("threshold_fitness", threshold_fitness_);
     this->get_parameter("initialpose", initialpose_);
     this->get_parameter("dis_updatemap", dis_updatemap_);
+
+    int icp_method_param = 1;
+    this->get_parameter("icp_method", icp_method_param);
+    icp_method_ = icp_method_param;
 
     for (auto i : initialpose_)
     {
@@ -712,7 +718,7 @@ void GloabalLocalization::LocalizationInitialize()
 
             // auto multiScale_reg_matrix = pcd_tools::RegistrationMultiScaleIcp(source, target, voxelsize_fine_, 1, {1, 2, 4});
             if (target->IsEmpty()) { lock_mat_odom2map_.unlock(); continue; }
-            auto multiScale_reg_matrix = pcd_tools::RegistrationMultiScaleIcp(source, target, voxelsize_fine_, 1, {1, 2, 3});
+            auto multiScale_reg_matrix = pcd_tools::RegistrationMultiScaleIcp(source, target, voxelsize_fine_, icp_method_, {1, 2, 3});
             reg_matrix = multiScale_reg_matrix * reg_matrix;
             source->Transform(multiScale_reg_matrix);
             auto eva_result_coarse = open3d::pipelines::registration::EvaluateRegistration(*source, *target, voxelsize_fine_ * 3);
@@ -746,16 +752,16 @@ void GloabalLocalization::LocalizationInitialize()
 }
 void GloabalLocalization::Localization()
 {
-    RCLCPP_INFO(this->get_logger(), "wait for Odometry_loc");
+    RCLCPP_INFO(this->get_logger(), "wait for aft_mapped_to_init");
     // 等待接收到第一条里程计消息（通过检查timestamp是否有效）
     while (rclcpp::ok() && timestamp_odom_.seconds() == 0.0)
     {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for Odometry_loc...");
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for aft_mapped_to_init...");
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    RCLCPP_INFO(this->get_logger(), "Received Odometry_loc");
+    RCLCPP_INFO(this->get_logger(), "Received aft_mapped_to_init");
 
-    RCLCPP_INFO(this->get_logger(), "wait for cloud_registered_1");
+    RCLCPP_INFO(this->get_logger(), "wait for cloud_registered");
     // 等待接收到第一条点云消息（通过检查pcd_scan_cur_是否为空）
     while (rclcpp::ok())
     {
@@ -766,10 +772,10 @@ void GloabalLocalization::Localization()
         {
             break;
         }
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for cloud_registered_1...");
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for cloud_registered...");
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    RCLCPP_INFO(this->get_logger(), "Received cloud_registered_1");
+    RCLCPP_INFO(this->get_logger(), "Received cloud_registered");
 
     // initialize
     /****初始化定位****/
@@ -946,7 +952,7 @@ void GloabalLocalization::Localization()
             open3d::utility::LogInfo("after prerpocess: {}", source->points_.size());
 
             if (target->IsEmpty()) { lock_mat_odom2map_.unlock(); continue; }
-            auto reg_result2 = pcd_tools::RegistrationIcp(source, target, voxelsize_fine_ * 2, reg_matrix, 1);
+            auto reg_result2 = pcd_tools::RegistrationIcp(source, target, voxelsize_fine_ * 2, reg_matrix, icp_method_);
             reg_matrix = reg_result2.transformation_ * reg_matrix;
             auto eva_result2 = open3d::pipelines::registration::EvaluateRegistration(*source, *target, voxelsize_fine_ * 4, reg_matrix);
             /// 给发布的置信度赋值
