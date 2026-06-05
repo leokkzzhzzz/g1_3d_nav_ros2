@@ -164,7 +164,6 @@ RC 手柄 + sport mode + 慢走。要点：
 保存，不用单独再跑命令（ADR-007）。
 
 预期输出：
-
 ```
 === Ctrl+C received — running mapping_save.sh ===
 [1/3] dumping 3D PCD via fast_lio /map_save ...
@@ -201,7 +200,6 @@ PGM/yaml 可以 commit 进仓库当 canon。`scans.pcd` 不进 git（每场地�
 重建。
 
 ---
-
 ## Map editing — `ros_map_edit`
 
 mapping_save.sh 出来的 raw PGM 经常需要手工修：墙壁中间的雷达噪点要擦、画
@@ -222,9 +220,7 @@ contained 的 ROS 1 noetic Docker 镜像 + RViz panel，跑在 **workstation 端
         -v "$HOME/g1_maps:/root/maps" \
         map_edit_rviz:latest
 ```
-
 ### 编辑 + 回传流程
-
 ```bash
 # 1. 从 G1 拉地图到 workstation
 [host] scp unitree@<G1 ip>:/home/unitree/g1_3d_nav_ros2/maps/accumulated_grid.{pgm,yaml} \
@@ -240,14 +236,16 @@ contained 的 ROS 1 noetic Docker 镜像 + RViz panel，跑在 **workstation 端
 #    - Region      → 画多边形区域
 #    - 编辑完点绿色 "Save All Files" 按钮
 #    保存到 $HOME/g1_maps/accumulated_grid.{pgm,yaml,json,_region.json}
-
+```
 ---
 
-## Localization + Navigation
+
+### Localization + Navigation
 
 End-to-end goal-driven motion verified 2026-05-26: RViz2 `2D Goal Pose` →
 planner → controller → twist_mux → `g1_write_node` → SDK `LocoClient::Move()`
 → G1 walks.
+
 
 ### 启动顺序（4 个终端）
 
