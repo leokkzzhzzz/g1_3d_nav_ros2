@@ -241,23 +241,6 @@ contained 的 ROS 1 noetic Docker 镜像 + RViz panel，跑在 **workstation 端
 #    - 编辑完点绿色 "Save All Files" 按钮
 #    保存到 $HOME/g1_maps/accumulated_grid.{pgm,yaml,json,_region.json}
 
-# 4. 传回 G1（mode: trinary 是 ros_map_edit 漏写，要补；image: 改回容器内绝对路径）
-[host] grep -q '^mode:' "$HOME/g1_maps/accumulated_grid.yaml" \
-        || sed -i '2a mode: trinary' "$HOME/g1_maps/accumulated_grid.yaml"
-[host] sed -i 's|^image:.*|image: /g1_3d_nav_ros2/maps/accumulated_grid.pgm|' \
-        "$HOME/g1_maps/accumulated_grid.yaml"
-[host] scp "$HOME/g1_maps"/accumulated_grid.{pgm,yaml,json} \
-        unitree@<G1 ip>:/home/unitree/g1_3d_nav_ros2/maps/
-
-# 5. G1 端 hot-reload map_server（不用重启 nav 栈）
-[G1] docker exec 3d_nav_ros2 bash -c '
-    source /opt/ros/humble/setup.bash; source /botbrain_ws/install/setup.bash
-    export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-    export ZENOH_CONFIG_OVERRIDE="mode=\"client\";connect/endpoints=[\"tcp/127.0.0.1:7448\"]"
-    ros2 service call /map_server/load_map nav2_msgs/srv/LoadMap \
-        "{map_url: /g1_3d_nav_ros2/maps/accumulated_grid.yaml}"'
-```
-
 ---
 
 ## Localization + Navigation
@@ -307,18 +290,16 @@ planner → controller → twist_mux → `g1_write_node` → SDK `LocoClient::Mo
 1. 操作员在场，能直接看到 G1
 2. G1 周围 ≥ 1 m 净空，不在台阶边
 3. RC 在手 — **L2 + B 是硬件刹车**（独立于 ROS 栈）
-4. 至少一种软件刹车（下面的 soft_stop 或 estop）手边能调
+4. 至少一种软件刹车（下面的 soft_stop）手边能调
 
 ### Brakes（软件刹车）
 
 | 工具 | 行为 | 何时用 |
 |---|---|---|
 | `tools/nav/soft_stop.sh` | 取消所有 `/navigate_to_pose` goal → twist_mux fallback `cmd_vel_zero` → G1 **原地保持站立** | 常规"停一下"。立即可发新 goal |
-| `tools/estop.sh` | 调 `/emergency_stop` 服务 → SDK `stop_move()` + `BALANCE_SQUAT_SQUAT_STAND` → G1 **停 + 蹲下**。再调一次复位站起 | 真紧急。Fail-passive：即使 balance 失效也以低姿态着地 |
 
 ```bash
 [G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/nav/soft_stop.sh   # 常规
-[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/estop.sh           # 紧急
 ```
 
 ## Waypoint testing — Gotop
@@ -328,11 +309,11 @@ planner → controller → twist_mux → `g1_write_node` → SDK `LocoClient::Mo
 
 | 工具 | 用途 |
 |---|---|
-| `capture.sh` | 标记当前 G1 位姿到 yaml |
+| `capture.sh` | 标记当前 G1 位姿到 yaml，hallway代表单个点位，hallway[]代表系列点位 |
 | `goto.sh`    | 单点导航到指定 label，输出误差 |
 | `batch.sh`   | 批量跑多 label × 多轮，输出 markdown 报告 |
 
-label 格式 `[A-Za-z][A-Za-z0-9_-]*`：`kitchen` / `door1` / `lab_corner_3`。
+label 格式 `[A-Za-z][A-Za-z0-9_-]*`：`kitchen` / `door1` / `lab_corner_3` /`走廊`。
 yaml 持久化在 `/g1_3d_nav_ros2/data/waypoints.yaml`（host 同步可见）。
 
 ### 1. 点位获取（capture）
@@ -370,6 +351,7 @@ REPL：
 ```
 goto> kit<TAB>     ← Tab 自动补全 label
 goto> kitchen      ← G1 walk；结束输出 nav2 status + xy_err / yaw_err
+goto> kitchen[]    ← G1会从kitchen1走到kitchen列表里最后一个点
 goto> list         ← 列所有 label
 goto> q            ← 干净退出
 goto> q!           ← 立即软停 + 退出
@@ -383,33 +365,10 @@ timestamp,label,goal_x,goal_y,goal_yaw_deg,nav2_status,duration_s,reached_x,reac
 2026-05-26T10:30:15,kitchen,1.2300,4.5600,90.00,SUCCEEDED,12.30,1.2400,4.5500,89.50,0.0141,-0.50
 ```
 
-### 3. 点位精度（batch）
-
-批量 + markdown 报告。每段问 `physical_sanity (y/n/skip)`（防 nav2 报
-SUCCEEDED 但定位漂的 case）。
-
-```bash
-# yaml 里所有 × 3 轮，每轮顺序随机
-[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
-        --all --rounds 3 --shuffle
-
-# 指定 label
-[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
-        --labels kitchen,door1,lab_corner --rounds 3
-
-# 按 group（yaml 里手编 groups: 段）
-[G1] docker exec -it 3d_nav_ros2 /g1_3d_nav_ros2/tools/gotop/batch.sh \
-        --labels @kitchen_zone --rounds 3
+G1成功到达点位后会发/reach_point话题:
+```reach_point
+/reach_point: {"name": "test", "type": "series", "status": "SUCCEEDED", "timestamp": "2026-06-05T06:12:28", "position": {"x": -0.404, "y": -0.051, "yaw_deg": 21.0}, "error": {"xy_m": 0.023, "yaw_deg": 0.0}}
 ```
-
-输出 markdown 报告 `/g1_3d_nav_ros2/data/batch_report.md`：
-
-- 每段一行：round / label / goal pose / reached pose / xy_err / yaw_err /
-  duration / nav2 status / sanity
-- 每个 label 汇总：成功率、xy_err 平均±std、yaw_err 平均±std
-
-每次 batch **覆盖**这个文件；要保留先改名 `cp batch_report.md
-batch_$(date +%F).md`。
 
 ### Waypoint 测试时的刹车
 
@@ -417,7 +376,6 @@ batch_$(date +%F).md`。
 |---|---|
 | Ctrl+C 在 goto/batch 终端 | 软停（取消 goal、零速、G1 站立、脚本退出） |
 | 另一终端跑 `tools/nav/soft_stop.sh` | 同软停，但不退出 goto/batch 脚本 |
-| `tools/estop.sh` | 紧急停 + 蹲下 |
 | RC L2+B | 硬件刹车，独立于 ROS |
 
 ---
