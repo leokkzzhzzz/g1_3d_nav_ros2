@@ -5,8 +5,8 @@ G1 跑完建图会生成 `maps/accumulated_grid.{pgm,yaml}`，但里面常常有
 整个流程就是：
 
 ```
-G1 出图  ──scp──►  工作站编辑  ──scp──►  G1 热重载
-                  （这个目录）
+G1 出图  ──►  工作站编辑  ──►  G1 热重载
+              （仓库 maps/）
 ```
 
 本目录三样东西：
@@ -15,50 +15,42 @@ G1 出图  ──scp──►  工作站编辑  ──scp──►  G1 热重载
 - `start_map_edit.sh` — 启动脚本，处理 X11 转发、插件路径、清掉外面继承来的 `ROS_MASTER_URI`
 - `ros_map_edit/` — 改过的 RViz 插件源码（见文末"打过的补丁"）
 
+**先进仓库**（下面所有命令都假设你已经 cd 进来了）：
+
+```bash
+cd ~/g1_3d_nav_ros2
+```
+
 ---
 
 ## 一、第一次准备（只做一次）
 
-构建镜像和容器：
+构建镜像：
 
 ```bash
-cd g1_3d_nav_ros2/tools/host_side/map_edit && docker build -t map_edit_rviz:latest .
+docker build -t map_edit_rviz:latest tools/host_side/map_edit
 ```
 
-```bash
-mkdir -p "$HOME/g1_maps"
-```
+创建容器，把仓库里的 `maps/` 挂进去（这样改完地图 `git diff` 就能看到改了啥）：
 
 ```bash
-docker run -d --name map_edit_rviz -e DISPLAY="$DISPLAY" -v /tmp/.X11-unix:/tmp/.X11-unix -v "$HOME/g1_maps:/root/maps" map_edit_rviz:latest
+docker run -d --name map_edit_rviz -e DISPLAY="$DISPLAY" -v /tmp/.X11-unix:/tmp/.X11-unix -v "$PWD/maps":/root/maps map_edit_rviz:latest
 ```
 
 容器跑的是 `sleep infinity`，启动脚本用 `docker exec` 进去干活。
+
+> 之前用过旧版本（挂 `$HOME/g1_maps` 那种）的话，先 `docker rm -f map_edit_rviz` 删掉重建。
 
 ---
 
 ## 二、从 G1 拉地图
 
-设环境变量（每次开终端先设一次，下面都用得到）：
+ssh 上 G1，把 `maps/accumulated_grid.{pgm,yaml}` 复制到本机仓库的 `maps/` 下，怎么传你随意（scp / rsync / U 盘都行）。
+
+文件到位之后，G1 yaml 里 `image:` 写的是 G1 容器内的绝对路径，本机加载不到，改成相对路径：
 
 ```bash
-G1=unitree@<g1的ip>
-```
-
-```bash
-H="$HOME/g1_maps"
-```
-
-拉文件：
-
-```bash
-scp "$G1":/home/unitree/g1_3d_nav_ros2_repo/maps/accumulated_grid.{pgm,yaml} "$H/"
-```
-
-G1 yaml 里 `image:` 写的是 G1 容器内的绝对路径，本机加载不到，改成相对路径：
-
-```bash
-sed -i 's|^image:.*|image: accumulated_grid.pgm|' "$H/accumulated_grid.yaml"
+sed -i 's|^image:.*|image: accumulated_grid.pgm|' maps/accumulated_grid.yaml
 ```
 
 ---
@@ -66,7 +58,7 @@ sed -i 's|^image:.*|image: accumulated_grid.pgm|' "$H/accumulated_grid.yaml"
 ## 三、启动编辑器
 
 ```bash
-./start_map_edit.sh /root/maps/accumulated_grid.yaml
+tools/host_side/map_edit/start_map_edit.sh /root/maps/accumulated_grid.yaml
 ```
 
 RViz 会弹出来。左边是 **File Management** 面板（绿色 **Save All Files** 按钮 + **Open Map** 按钮），工具栏多了 4 个工具：`MapEdit`、`VirtualWall`、`Region`、`MapEraser`。
@@ -97,7 +89,7 @@ RViz 会弹出来。左边是 **File Management** 面板（绿色 **Save All Fil
 - `accumulated_grid.json` — 虚拟墙（没画就是 `{"vws": []}`）
 - `accumulated_grid_region.json` — 区域（没画就是 `{"regions": []}`）
 
-弹个对话框告诉你存了啥。容器里写的是 `/root/maps/`，宿主机 `$HOME/g1_maps/` 立刻能看到。
+弹个对话框告诉你存了啥。容器里写的是 `/root/maps/`，宿主机仓库的 `maps/` 立刻能看到，`git diff` 就是这次的改动。
 
 ---
 
@@ -116,11 +108,11 @@ sed -i 's|^image:.*|image: /g1_3d_nav_ros2/maps/accumulated_grid.pgm|' "$H/accum
 四个文件传回去（region.json 没画过就跳过）：
 
 ```bash
-scp "$H"/accumulated_grid.{pgm,yaml,json} "$G1":/home/unitree/g1_3d_nav_ros2_repo/maps/
+scp maps/accumulated_grid.{pgm,yaml,json} "unitree@<g1 ip>":/home/unitree/g1_3d_nav_ros2_repo/maps/
 ```
 
 ```bash
-scp "$H"/accumulated_grid_region.json "$G1":/home/unitree/g1_3d_nav_ros2_repo/maps/ 2>/dev/null || true
+scp maps/accumulated_grid_region.json "unitree@<g1 ip>":/home/unitree/g1_3d_nav_ros2_repo/maps/ 2>/dev/null || true
 ```
 
 ---
