@@ -50,6 +50,7 @@ Built-in commands at the prompt:
 """
 import argparse
 import csv
+import json
 import math
 import os
 import sys
@@ -74,9 +75,11 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
+from std_msgs.msg import String
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 import yaml
@@ -96,8 +99,8 @@ RETRY_BACKOFF_S = 1.0
 # punctuation in prefix), suffix is one or more digits. Sorted by integer
 # value so office10 lands after office9. Mirror of capture_waypoints.py.
 import re as _re
-SERIES_RE = _re.compile(r"^([A-Za-z][A-Za-z_]*)(\d+)$")
-SERIES_BRACKET_RE = _re.compile(r"^([A-Za-z][A-Za-z_]*)\[\]$")
+SERIES_RE = _re.compile(r"^([A-Za-z一-鿿][A-Za-z_一-鿿]*)(\d+)$")
+SERIES_BRACKET_RE = _re.compile(r"^([A-Za-z一-鿿][A-Za-z_一-鿿]*)\[\]$")
 
 
 def parse_series_member(label):
@@ -328,6 +331,12 @@ def main():
     buf = Buffer()
     TransformListener(buf, node)
     ac = ActionClient(node, NavigateToPose, "navigate_to_pose")
+    reach_qos = QoSProfile(
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+    reach_pub = node.create_publisher(String, "/reach_point", reach_qos)
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     Thread(target=executor.spin, daemon=True).start()
@@ -388,10 +397,24 @@ def main():
         except Exception:
             pass
 
+    def publish_reach(name, wp_type, status, rx=None, ry=None, ryaw_deg=None,
+                       xy_err=None, yaw_err_deg=None):
+        msg = {"name": name, "type": wp_type, "status": status,
+               "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        if status == "SUCCEEDED" and rx is not None:
+            msg["position"] = {"x": round(rx, 3), "y": round(ry, 3),
+                               "yaw_deg": round(ryaw_deg, 1)}
+            msg["error"] = {"xy_m": round(xy_err, 3),
+                            "yaw_deg": round(abs(yaw_err_deg), 1)}
+        s = String()
+        s.data = json.dumps(msg)
+        reach_pub.publish(s)
+        print(f"     /reach_point: {s.data}")
+
     def goto_one(label, wp, group="", seq_idx="", attempt=1):
         """Send one NavigateToPose goal, sample reached pose on success,
-        append a CSV row. Returns (success: bool, status: str). Raises
-        UserAbort if the operator hits Ctrl+C during the goal."""
+        append a CSV row. Returns (success, status, rx, ry, ryaw_deg, xy_err, yaw_err_deg).
+        Position fields are None on failure. Raises UserAbort on Ctrl+C."""
         pose = make_pose_stamped(node, wp)
         rx = ry = ryaw = None
         xy_err = yaw_err_deg = None
@@ -418,7 +441,8 @@ def main():
             group, str(seq_idx) if seq_idx != "" else "", str(attempt),
         ])
         csv_f.flush()
-        return success, status
+        ryaw_deg_out = math.degrees(ryaw) if ryaw is not None else None
+        return success, status, rx, ry, ryaw_deg_out, xy_err, yaw_err_deg
 
     def walk_series(group, members):
         """members is a list of (idx, label). Walks them in order. Each
@@ -428,6 +452,8 @@ def main():
         total = len(members)
         print(f"\n  walking {group}[] ({total} pts: "
               f"{', '.join(lab for _, lab in members)})")
+        last_rx = last_ry = last_ryaw_deg = last_xy_err = last_yaw_err = None
+        last_status = None
         for hop, (idx, label) in enumerate(members, 1):
             wp = waypoints[label]
             print(f"\n  [{hop}/{total}] -> {label} (x={wp['x']:.2f} y={wp['y']:.2f} "
@@ -438,7 +464,8 @@ def main():
                     print(f"     retry {attempt}/{args.retries} after {RETRY_BACKOFF_S}s ...")
                     time.sleep(RETRY_BACKOFF_S)
                 try:
-                    success, status = goto_one(label, wp, group, idx, attempt)
+                    success, status, rx, ry, ryaw_deg, xy_err, yaw_err_deg = \
+                        goto_one(label, wp, group, idx, attempt)
                 except UserAbort:
                     print("     Ctrl+C — goal cancelled. Series aborted.")
                     csv_w.writerow([
@@ -449,12 +476,18 @@ def main():
                         group, str(idx), str(attempt),
                     ])
                     csv_f.flush()
+                    publish_reach(group, "series", "USER_CANCELED")
                     return False
                 if success:
+                    last_rx, last_ry, last_ryaw_deg = rx, ry, ryaw_deg
+                    last_xy_err, last_yaw_err = xy_err, yaw_err_deg
+                    last_status = status
                     break
+                last_status = status
             if not success:
                 print(f"\n  series {group}[] aborted: "
                       f"{label} failed after {args.retries} attempts.")
+                publish_reach(group, "series", last_status)
                 return False
             if args.dwell > 0 and hop < total:
                 print(f"     dwell {args.dwell:.1f}s ...")
@@ -462,8 +495,11 @@ def main():
                     time.sleep(args.dwell)
                 except KeyboardInterrupt:
                     print("     Ctrl+C during dwell — series aborted.")
+                    publish_reach(group, "series", "USER_CANCELED")
                     return False
         print(f"\n  series {group}[] completed: {total}/{total} ok.")
+        publish_reach(group, "series", "SUCCEEDED",
+                      last_rx, last_ry, last_ryaw_deg, last_xy_err, last_yaw_err)
         return True
 
     aborted = False
@@ -522,7 +558,8 @@ def main():
         print(f"\n  -> {label} (x={wp['x']:.2f} y={wp['y']:.2f} "
               f"yaw={math.degrees(wp['yaw']):.0f}deg)")
         try:
-            goto_one(label, wp)
+            success, status, rx, ry, ryaw_deg, xy_err, yaw_err_deg = goto_one(label, wp)
+            publish_reach(label, "single", status, rx, ry, ryaw_deg, xy_err, yaw_err_deg)
         except UserAbort:
             print("     Ctrl+C — goal cancelled (soft stop, G1 standing).")
             csv_w.writerow([
@@ -533,6 +570,7 @@ def main():
                 "", "", "1",
             ])
             csv_f.flush()
+            publish_reach(label, "single", "USER_CANCELED")
             aborted = True
         print()
 

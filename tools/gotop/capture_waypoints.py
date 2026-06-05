@@ -81,8 +81,8 @@ LABEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 # Series detection: prefix is letters/underscores only (no digits or
 # punctuation in prefix), suffix is one or more digits. Sorted by integer
 # value of the suffix so office10 lands after office9.
-SERIES_RE = re.compile(r"^([A-Za-z][A-Za-z_]*)(\d+)$")
-SERIES_BRACKET_RE = re.compile(r"^([A-Za-z][A-Za-z_]*)\[\]$")
+SERIES_RE = re.compile(r"^([A-Za-z一-鿿][A-Za-z_一-鿿]*)(\d+)$")
+SERIES_BRACKET_RE = re.compile(r"^([A-Za-z一-鿿][A-Za-z_一-鿿]*)\[\]$")
 
 
 def parse_series_member(label):
